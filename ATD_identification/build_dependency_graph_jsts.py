@@ -88,16 +88,40 @@ def _is_type_only(dep: Dict[str, Any]) -> bool:
 
 
 def _is_local(dep: Dict[str, Any]) -> bool:
-    """Return True if the dependency is a local (non-npm) dependency."""
+    """Return True if the dependency *might* be a local (non-npm) dependency.
+
+    Important: this must NOT reject unresolved imports, because alias
+    resolution happens *after* this check.  We only reject deps that are
+    clearly npm packages (either resolved into node_modules or tagged as npm
+    by dependency-cruiser).
+    """
     resolved = dep.get("resolved") or ""
-    if not resolved or resolved.startswith("node_modules/"):
+    # If resolved into node_modules, definitely not local
+    if resolved.startswith("node_modules/"):
         return False
-    # Also check the "module" field — npm packages don't have relative resolved paths
-    dep_types = dep.get("dependencyTypes") or []
+
     # dependency-cruiser tags npm deps as "npm", "npm-dev", etc.
+    dep_types = dep.get("dependencyTypes") or []
     npm_types = {"npm", "npm-dev", "npm-optional", "npm-peer", "npm-bundled", "npm-no-pkg"}
-    if isinstance(dep_types, list) and all(dt in npm_types for dt in dep_types):
+    if isinstance(dep_types, list) and dep_types and all(dt in npm_types for dt in dep_types):
         return False
+
+    # If resolved is empty (couldNotResolve), check module name heuristics
+    if not resolved:
+        module_name = dep.get("module") or ""
+        # Relative imports are always local
+        if module_name.startswith(".") or module_name.startswith("/"):
+            return True
+        # Virtual modules are not local
+        if _is_virtual_module(module_name):
+            return False
+        # npm-looking packages are not local
+        if _looks_like_npm(module_name):
+            return False
+        # Could be an aliased import (e.g. @app/utils, $lib/foo) — let it through
+        # so alias resolution gets a chance
+        return True
+
     return True
 
 
@@ -436,9 +460,9 @@ def build_graph(
                         diag.record_alias_resolved(module_name, alias_resolved)
 
             # Still unresolved — categorize for diagnostics
-            if not resolved or could_not_resolve and not os.path.isfile(
+            if not resolved or (could_not_resolve and not os.path.isfile(
                 os.path.join(repo_root, resolved)
-            ):
+            )):
                 if module_name:
                     if _is_virtual_module(module_name):
                         diag.record_virtual(module_name, source)

@@ -212,7 +212,9 @@ trap '_restore_npmrc' EXIT
 : "${NPM_INSTALL_TIMEOUT:=60}"
 
 if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REPO_PATH/pnpm-lock.yaml" ]]; then
+  NPM_LOG="$OUTPUT_DIR/npm_install.log"
   echo "  Attempt 1: npm install (timeout ${NPM_INSTALL_TIMEOUT}s, bypass all .npmrc via env vars)..."
+  echo "=== npm install attempt 1 ==="  > "$NPM_LOG"
   timeout "${NPM_INSTALL_TIMEOUT}" bash -c '
     cd "$1" && npm install \
       --ignore-scripts \
@@ -220,11 +222,12 @@ if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REP
       --legacy-peer-deps \
       --prefer-offline \
       2>&1
-  ' _ "$REPO_PATH" && _npm_ok=true || echo "  npm install exited with $? (may have timed out)"
+  ' _ "$REPO_PATH" >> "$NPM_LOG" 2>&1 && _npm_ok=true || echo "  npm install exited with $? (may have timed out)"
 
   # Attempt 2: if node_modules still missing, try without the lockfile
   if [[ ! -d "$REPO_PATH/node_modules" ]]; then
     echo "  Attempt 2: npm install without lockfile (timeout ${NPM_INSTALL_TIMEOUT}s)..."
+    echo "=== npm install attempt 2 (no lockfile) ===" >> "$NPM_LOG"
     timeout "${NPM_INSTALL_TIMEOUT}" bash -c '
       cd "$1" && npm install \
         --ignore-scripts \
@@ -233,9 +236,16 @@ if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REP
         --legacy-peer-deps \
         --prefer-offline \
         2>&1
-    ' _ "$REPO_PATH" && _npm_ok=true || echo "  npm install exited with $? (may have timed out)"
+    ' _ "$REPO_PATH" >> "$NPM_LOG" 2>&1 && _npm_ok=true || echo "  npm install exited with $? (may have timed out)"
   else
     _npm_ok=true
+  fi
+
+  # Show which packages triggered auth errors
+  if grep -qi 'E401\|401 Unauthorized\|expired\|revoked' "$NPM_LOG" 2>/dev/null; then
+    echo "  ⚠ Auth errors detected. Packages that triggered E401:"
+    grep -i 'E401\|401 Unauthorized\|expired\|revoked' "$NPM_LOG" | head -10 | sed 's/^/    /'
+    echo "    Full log: $NPM_LOG"
   fi
 
   if [[ -d "$REPO_PATH/node_modules" ]]; then
@@ -315,8 +325,13 @@ if [[ "$MONOREPO_DETECTED" == "true" && -n "$WORKSPACE_DIRS" ]]; then
 
   echo "Scanning workspace dirs: $WORKSPACE_DIRS"
   echo "Include-only pattern  : $INCLUDE_ONLY_PATTERN"
+  # Use 'depcruise' directly (globally installed in Docker) or fallback via npx --package
+  DEPCRUISE_BIN="depcruise"
+  if ! command -v depcruise >/dev/null 2>&1; then
+    DEPCRUISE_BIN="npx --no-install --package dependency-cruiser depcruise"
+  fi
   # shellcheck disable=SC2086
-  ( cd "$REPO_PATH" && npx depcruise "${DEPCRUISE_ARGS[@]}" $WORKSPACE_DIRS > "$DEPCRUISE_JSON" )
+  ( cd "$REPO_PATH" && $DEPCRUISE_BIN "${DEPCRUISE_ARGS[@]}" $WORKSPACE_DIRS > "$DEPCRUISE_JSON" )
 else
   # Single-package repo: scan the entry subdir only
   local_entry="$ENTRY_SUBDIR"
@@ -333,7 +348,12 @@ else
   [[ -d "$REPO_PATH/$local_entry" ]] || { echo "ERROR: entry subdir not found: $REPO_PATH/$local_entry" >&2; exit 1; }
 
   echo "Scanning entry dir: $local_entry"
-  ( cd "$REPO_PATH" && npx depcruise "${DEPCRUISE_ARGS[@]}" "$local_entry" > "$DEPCRUISE_JSON" )
+  # Use 'depcruise' directly (globally installed in Docker) or fallback via npx --package
+  DEPCRUISE_BIN="depcruise"
+  if ! command -v depcruise >/dev/null 2>&1; then
+    DEPCRUISE_BIN="npx --no-install --package dependency-cruiser depcruise"
+  fi
+  ( cd "$REPO_PATH" && $DEPCRUISE_BIN "${DEPCRUISE_ARGS[@]}" "$local_entry" > "$DEPCRUISE_JSON" )
 fi
 
 if declare -F timing_mark >/dev/null 2>&1; then timing_mark "end_depcruise"; fi

@@ -156,6 +156,7 @@ trap '_restore_npmrc' EXIT
 
 # Default install if no custom QUALITY_INSTALL was defined
 : "${NPM_INSTALL_TIMEOUT:=60}"
+NPM_LOG="$OUT_ABS/npm_install.log"
 
 if ! declare -f QUALITY_INSTALL >/dev/null 2>&1; then
   echo "  npm install (timeout ${NPM_INSTALL_TIMEOUT}s)..."
@@ -165,8 +166,15 @@ if ! declare -f QUALITY_INSTALL >/dev/null 2>&1; then
       --engine-strict false \
       --legacy-peer-deps \
       --prefer-offline \
-      2>&1 | tail -20
-  ' _ "$WT_ROOT" || echo "  ⚠ npm install exited with $? (timed out or failed — continuing)"
+      2>&1
+  ' _ "$WT_ROOT" > "$NPM_LOG" 2>&1 || echo "  ⚠ npm install exited with $? (timed out or failed — continuing)"
+
+  # Show which packages triggered auth errors
+  if grep -qi 'E401\|401 Unauthorized\|expired\|revoked' "$NPM_LOG" 2>/dev/null; then
+    echo "  ⚠ Auth errors detected. Packages that triggered E401:"
+    grep -i 'E401\|401 Unauthorized\|expired\|revoked' "$NPM_LOG" | head -10 | sed 's/^/    /'
+    echo "    Full log: $NPM_LOG"
+  fi
 else
   echo "Using custom QUALITY_INSTALL for $REPO_NAME"
   QUALITY_INSTALL
