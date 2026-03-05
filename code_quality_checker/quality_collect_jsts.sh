@@ -234,12 +234,28 @@ run_tests() {
         2>&1 | tee "$TEST_LOG" || true
     return ${PIPESTATUS[0]}
 
-  # Fallback: npm test
+  # Fallback: npm test (only if the project defines a test script)
   else
-    echo "Using npm test (generic)"
-    timeout -k 30s "$JSTS_TEST_TIMEOUT" \
-      npm test 2>&1 | tee "$TEST_LOG" || true
-    return ${PIPESTATUS[0]}
+    if python3 -c "
+import json, sys
+try:
+    p = json.load(open('package.json'))
+    s = p.get('scripts', {})
+    if s.get('test') and s['test'].strip() not in ('', 'echo \"Error: no test specified\" && exit 1'):
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+" 2>/dev/null; then
+      echo "Using npm test (generic)"
+      timeout -k 30s "$JSTS_TEST_TIMEOUT" \
+        npm test 2>&1 | tee "$TEST_LOG" || true
+      return ${PIPESTATUS[0]}
+    else
+      echo "No test runner (jest/vitest/mocha) found and no 'test' script in package.json — skipping tests"
+      echo "no_test_runner" > "$OUT_ABS/test_skipped_reason.txt"
+      return 0
+    fi
   fi
 }
 
