@@ -183,6 +183,24 @@ _npm_ok=false
 _EMPTY_NPMRC="$(mktemp /tmp/.npmrc-empty-XXXXXX)"
 trap 'rm -f "$_EMPTY_NPMRC"' EXIT
 
+# Also temporarily hide the PROJECT-LEVEL .npmrc — npm always reads it and
+# there is NO flag to skip it. If it contains auth tokens for a private
+# registry, npm install will fail with E401 regardless of --userconfig.
+_PROJ_NPMRC_MOVED=false
+if [[ -f "$REPO_PATH/.npmrc" ]]; then
+  echo "  Moving aside project .npmrc (contains auth tokens)..."
+  mv "$REPO_PATH/.npmrc" "$REPO_PATH/.npmrc.atd-bak"
+  _PROJ_NPMRC_MOVED=true
+fi
+
+_restore_npmrc() {
+  if [[ "$_PROJ_NPMRC_MOVED" == true && -f "$REPO_PATH/.npmrc.atd-bak" ]]; then
+    mv "$REPO_PATH/.npmrc.atd-bak" "$REPO_PATH/.npmrc"
+  fi
+  rm -f "$_EMPTY_NPMRC"
+}
+trap '_restore_npmrc' EXIT
+
 if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REPO_PATH/pnpm-lock.yaml" ]]; then
   echo "  Attempt 1: npm install (bypass all .npmrc)..."
   ( cd "$REPO_PATH" && \
@@ -320,7 +338,8 @@ if declare -F timing_mark >/dev/null 2>&1; then timing_mark "start_buildDependen
 BUILD_GRAPH_ARGS=("$BUILD_GRAPH_PY" "$DEPCRUISE_JSON"
   --repo-root "$REPO_PATH"
   --entry "$ENTRY_SUBDIR"
-  --out "$GRAPH_JSON")
+  --out "$GRAPH_JSON"
+  --diagnostics "$OUTPUT_DIR/diagnostics_unresolved.txt")
 
 # Pass tsconfig for alias resolution ($lib/*, $apis/*, etc.)
 if [[ -n "$TSCONFIG_PATH" ]]; then
@@ -336,3 +355,4 @@ echo
 echo "✅ Done. Outputs:"
 echo "  - $DEPCRUISE_JSON"
 echo "  - $GRAPH_JSON"
+echo "  - $OUTPUT_DIR/diagnostics_unresolved.txt"

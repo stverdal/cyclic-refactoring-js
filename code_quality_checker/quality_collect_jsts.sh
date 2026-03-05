@@ -128,7 +128,24 @@ fi
 # crash with "double loading config /dev/null".
 export npm_config_registry=https://registry.npmjs.org
 _EMPTY_NPMRC="$(mktemp /tmp/.npmrc-empty-XXXXXX)"
-trap 'rm -f "$_EMPTY_NPMRC"' EXIT
+
+# Also temporarily hide the PROJECT-LEVEL .npmrc — npm always reads it and
+# there is NO flag to skip it. If it contains auth tokens for a private
+# registry, npm install will fail with E401 regardless of --userconfig.
+_PROJ_NPMRC_MOVED=false
+if [[ -f "$WT_ROOT/.npmrc" ]]; then
+  echo "  Moving aside project .npmrc (may contain expired auth tokens)..."
+  mv "$WT_ROOT/.npmrc" "$WT_ROOT/.npmrc.atd-bak"
+  _PROJ_NPMRC_MOVED=true
+fi
+
+_restore_npmrc() {
+  if [[ "$_PROJ_NPMRC_MOVED" == true && -f "$WT_ROOT/.npmrc.atd-bak" ]]; then
+    mv "$WT_ROOT/.npmrc.atd-bak" "$WT_ROOT/.npmrc"
+  fi
+  rm -f "$_EMPTY_NPMRC"
+}
+trap '_restore_npmrc' EXIT
 
 # Default install if no custom QUALITY_INSTALL was defined
 if ! declare -f QUALITY_INSTALL >/dev/null 2>&1; then

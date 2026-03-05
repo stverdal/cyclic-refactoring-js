@@ -225,15 +225,173 @@ def load_depcruise(path: str) -> Dict[str, Any]:
     return raw
 
 
+class _DiagnosticCollector:
+    """Collects unresolved import information for diagnostic reporting."""
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+        # module_name → set of source files that import it
+        self.npm_packages: Dict[str, Set[str]] = {}
+        self.virtual_modules: Dict[str, Set[str]] = {}
+        self.unresolved_local: Dict[str, Set[str]] = {}  # ← these matter
+        self.alias_resolved: Dict[str, str] = {}  # module → resolved path
+        self.type_only_skipped: int = 0
+
+    def record_npm(self, module: str, source: str) -> None:
+        if not self.enabled:
+            return
+        self.npm_packages.setdefault(module, set()).add(source)
+
+    def record_virtual(self, module: str, source: str) -> None:
+        if not self.enabled:
+            return
+        self.virtual_modules.setdefault(module, set()).add(source)
+
+    def record_unresolved(self, module: str, source: str) -> None:
+        if not self.enabled:
+            return
+        self.unresolved_local.setdefault(module, set()).add(source)
+
+    def record_alias_resolved(self, module: str, resolved: str) -> None:
+        if not self.enabled:
+            return
+        self.alias_resolved[module] = resolved
+
+    def record_type_only(self) -> None:
+        if not self.enabled:
+            return
+        self.type_only_skipped += 1
+
+    def write_report(self, out_path: str) -> None:
+        if not self.enabled:
+            return
+        lines: List[str] = []
+        lines.append("=" * 72)
+        lines.append("DEPENDENCY GRAPH DIAGNOSTIC REPORT")
+        lines.append("=" * 72)
+        lines.append("")
+
+        # Section 1: Unresolved local-looking imports (ACTION NEEDED if any)
+        lines.append("-" * 72)
+        if self.unresolved_local:
+            lines.append(
+                f"⚠  UNRESOLVED LOCAL-LOOKING IMPORTS: {len(self.unresolved_local)} "
+                f"unique module(s)"
+            )
+            lines.append(
+                "   These look like local files but could NOT be resolved."
+            )
+            lines.append(
+                "   If any of these are actual project files, cycles may be MISSED."
+            )
+            lines.append(
+                "   Check if they require npm install or tsconfig path aliases."
+            )
+            lines.append("-" * 72)
+            for mod in sorted(self.unresolved_local):
+                sources = sorted(self.unresolved_local[mod])
+                lines.append(f"  {mod}")
+                for s in sources[:5]:
+                    lines.append(f"    ← imported by: {s}")
+                if len(sources) > 5:
+                    lines.append(f"    ... and {len(sources) - 5} more")
+        else:
+            lines.append("✔  NO UNRESOLVED LOCAL-LOOKING IMPORTS")
+            lines.append("   All local file imports were resolved successfully.")
+            lines.append("-" * 72)
+        lines.append("")
+
+        # Section 2: Successfully alias-resolved imports
+        if self.alias_resolved:
+            lines.append(f"✔  ALIAS-RESOLVED IMPORTS: {len(self.alias_resolved)}")
+            for mod in sorted(self.alias_resolved):
+                lines.append(f"  {mod} → {self.alias_resolved[mod]}")
+            lines.append("")
+
+        # Section 3: npm packages (expected to be unresolved — safe to ignore)
+        if self.npm_packages:
+            lines.append(
+                f"ℹ  NPM PACKAGES (filtered out, safe to ignore): "
+                f"{len(self.npm_packages)}"
+            )
+            for mod in sorted(self.npm_packages):
+                n = len(self.npm_packages[mod])
+                lines.append(f"  {mod}  ({n} import(s))")
+            lines.append("")
+
+        # Section 4: Virtual/framework modules (safe to ignore)
+        if self.virtual_modules:
+            lines.append(
+                f"ℹ  VIRTUAL/FRAMEWORK MODULES (filtered out): "
+                f"{len(self.virtual_modules)}"
+            )
+            for mod in sorted(self.virtual_modules):
+                n = len(self.virtual_modules[mod])
+                lines.append(f"  {mod}  ({n} import(s))")
+            lines.append("")
+
+        # Section 5: Type-only imports
+        if self.type_only_skipped:
+            lines.append(
+                f"ℹ  TYPE-ONLY IMPORTS SKIPPED: {self.type_only_skipped}"
+            )
+            lines.append("")
+
+        report = "\n".join(lines)
+        Path(out_path).write_text(report, encoding="utf-8")
+        print(f"Diagnostic report: {out_path}")
+
+        # Also print the critical section to stdout
+        if self.unresolved_local:
+            print(f"\n⚠  {len(self.unresolved_local)} UNRESOLVED local-looking "
+                  f"import(s) — check diagnostic report for details.")
+        else:
+            print("\n✔  All local imports resolved — no missing cycles expected.")
+
+
+# Known virtual/framework module prefixes (not real files, safe to ignore)
+_VIRTUAL_MODULE_PREFIXES = (
+    "$app/", "$env/", "$service-worker",
+    "virtual:", "~", "\0",
+)
+
+# Patterns that indicate an npm package (not a relative/aliased local import)
+def _looks_like_npm(module: str) -> bool:
+    """Heuristic: if the module name starts with a package-like pattern."""
+    if module.startswith(".") or module.startswith("/"):
+        return False
+    if module.startswith("$") or module.startswith("@/") or module.startswith("~/"):
+        return False
+    # Scoped package: @foo/bar
+    if module.startswith("@") and "/" in module:
+        return True
+    # Bare identifier without path separators in the first segment
+    first_segment = module.split("/")[0]
+    if first_segment and not first_segment.startswith("."):
+        # Likely an npm package name
+        return True
+    return False
+
+
+def _is_virtual_module(module: str) -> bool:
+    """Check if the module is a known virtual/framework module."""
+    for prefix in _VIRTUAL_MODULE_PREFIXES:
+        if module.startswith(prefix):
+            return True
+    return False
+
+
 def build_graph(
     depcruise: Dict[str, Any],
     repo_root: str,
     entry: str,
     alias_map: Optional[List[Tuple[str, str]]] = None,
+    diagnostics: Optional[_DiagnosticCollector] = None,
 ) -> Dict[str, Any]:
     """Convert dependency-cruiser output to canonical dependency_graph.json."""
     modules = depcruise.get("modules") or []
     alias_map = alias_map or []
+    diag = diagnostics or _DiagnosticCollector(enabled=False)
 
     node_ids: Set[str] = set()
     edges: List[Tuple[str, str]] = []
@@ -253,12 +411,17 @@ def build_graph(
             if not isinstance(dep, dict):
                 continue
 
+            module_name = dep.get("module") or ""
+
             # Skip type-only imports
             if _is_type_only(dep):
+                diag.record_type_only()
                 continue
 
             # Skip non-local (npm) deps
             if not _is_local(dep):
+                if module_name:
+                    diag.record_npm(module_name, source)
                 continue
 
             resolved = dep.get("resolved") or ""
@@ -266,13 +429,27 @@ def build_graph(
 
             # If depcruise couldn't resolve, try alias resolution
             if (not resolved or could_not_resolve) and alias_map:
-                module_name = dep.get("module") or ""
                 if module_name:
                     alias_resolved = _resolve_alias(module_name, alias_map, repo_root)
                     if alias_resolved:
                         resolved = alias_resolved
+                        diag.record_alias_resolved(module_name, alias_resolved)
 
-            if not resolved or _is_excluded(resolved):
+            # Still unresolved — categorize for diagnostics
+            if not resolved or could_not_resolve and not os.path.isfile(
+                os.path.join(repo_root, resolved)
+            ):
+                if module_name:
+                    if _is_virtual_module(module_name):
+                        diag.record_virtual(module_name, source)
+                    elif _looks_like_npm(module_name):
+                        diag.record_npm(module_name, source)
+                    else:
+                        diag.record_unresolved(module_name, source)
+                if not resolved:
+                    continue
+
+            if _is_excluded(resolved):
                 continue
 
             # Skip self-edges
@@ -322,6 +499,9 @@ def main() -> None:
     ap.add_argument("--out", required=True, help="Output path for dependency_graph.json")
     ap.add_argument("--tsconfig", default=None,
                     help="Path to tsconfig.json for resolving path aliases ($lib/*, etc.)")
+    ap.add_argument("--diagnostics", default=None,
+                    help="Path to write a diagnostic report of unresolved imports. "
+                         "Use this to verify that no local project files were missed.")
     args = ap.parse_args()
 
     repo_root = os.path.realpath(args.repo_root)
@@ -339,10 +519,18 @@ def main() -> None:
                 print(f"  {prefix} → {os.path.relpath(repl, repo_root)}")
 
     depcruise = load_depcruise(args.depcruise_json)
-    payload = build_graph(depcruise, repo_root, args.entry, alias_map=alias_map)
+
+    diag = _DiagnosticCollector(enabled=bool(args.diagnostics))
+    payload = build_graph(
+        depcruise, repo_root, args.entry,
+        alias_map=alias_map, diagnostics=diag,
+    )
 
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"Wrote: {out_path} (nodes={len(payload['nodes'])} edges={len(payload['edges'])})")
+
+    if args.diagnostics:
+        diag.write_report(args.diagnostics)
 
 
 if __name__ == "__main__":
