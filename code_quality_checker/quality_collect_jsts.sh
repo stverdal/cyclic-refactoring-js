@@ -122,14 +122,19 @@ if [[ -f "$REPO_SETUP_FILE" ]]; then
 fi
 
 # Force public registry via env var (overrides ALL .npmrc files: project,
-# user, global, and built-in) and --userconfig /dev/null to skip any
-# .npmrc that embeds expired/revoked auth tokens (causes E401 in Docker).
+# user, global, and built-in).
+# Create a temporary empty .npmrc to bypass any .npmrc with expired/revoked
+# auth tokens. NOTE: --userconfig /dev/null does NOT work — some npm versions
+# crash with "double loading config /dev/null".
 export npm_config_registry=https://registry.npmjs.org
+_EMPTY_NPMRC="$(mktemp /tmp/.npmrc-empty-XXXXXX)"
+trap 'rm -f "$_EMPTY_NPMRC"' EXIT
 
 # Default install if no custom QUALITY_INSTALL was defined
 if ! declare -f QUALITY_INSTALL >/dev/null 2>&1; then
   npm install \
-    --userconfig /dev/null \
+    --userconfig "$_EMPTY_NPMRC" \
+    --globalconfig "$_EMPTY_NPMRC" \
     --engine-strict false \
     --legacy-peer-deps \
     2>&1 | tail -20 || true
@@ -159,7 +164,7 @@ run_tests() {
   if npx jest --version >/dev/null 2>&1; then
     echo "Detected Jest"
     # Install jest-junit reporter if not already present
-    npm install --save-dev jest-junit --userconfig /dev/null 2>/dev/null || true
+    npm install --save-dev jest-junit --userconfig "$_EMPTY_NPMRC" --globalconfig "$_EMPTY_NPMRC" 2>/dev/null || true
     timeout -k 30s "$JSTS_TEST_TIMEOUT" \
       npx jest --ci \
         --reporters=default --reporters=jest-junit \
@@ -184,7 +189,7 @@ run_tests() {
   # Try mocha
   elif npx mocha --version >/dev/null 2>&1; then
     echo "Detected Mocha"
-    npm install --save-dev mocha-junit-reporter --userconfig /dev/null 2>/dev/null || true
+    npm install --save-dev mocha-junit-reporter --userconfig "$_EMPTY_NPMRC" --globalconfig "$_EMPTY_NPMRC" 2>/dev/null || true
     timeout -k 30s "$JSTS_TEST_TIMEOUT" \
       npx mocha --reporter mocha-junit-reporter \
         --reporter-options mochaFile="$OUT_ABS/test_results.xml" \

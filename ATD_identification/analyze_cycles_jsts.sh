@@ -175,17 +175,22 @@ fi
 # ---- Step 1: Install dependencies if needed ----
 echo "== Step 1: ensure dependencies are installed =="
 _npm_ok=false
+
+# Create a temporary empty .npmrc to override any project/user/global .npmrc
+# that may contain expired/revoked auth tokens (causes E401 in Docker).
+# NOTE: --userconfig /dev/null does NOT work — some npm versions crash with
+# "double loading config /dev/null, previously loaded as user".
+_EMPTY_NPMRC="$(mktemp /tmp/.npmrc-empty-XXXXXX)"
+trap 'rm -f "$_EMPTY_NPMRC"' EXIT
+
 if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REPO_PATH/pnpm-lock.yaml" ]]; then
-  # Force public registry via env var (overrides ALL .npmrc files: project,
-  # user, global, and built-in). Use --userconfig and --globalconfig /dev/null
-  # to fully bypass any .npmrc that embeds expired/revoked auth tokens.
   echo "  Attempt 1: npm install (bypass all .npmrc)..."
   ( cd "$REPO_PATH" && \
     npm_config_registry=https://registry.npmjs.org \
     npm install \
       --ignore-scripts \
-      --userconfig /dev/null \
-      --globalconfig /dev/null \
+      --userconfig "$_EMPTY_NPMRC" \
+      --globalconfig "$_EMPTY_NPMRC" \
       --engine-strict false \
       --legacy-peer-deps \
       2>&1 ) && _npm_ok=true
@@ -197,8 +202,8 @@ if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REP
       npm_config_registry=https://registry.npmjs.org \
       npm install \
         --ignore-scripts \
-        --userconfig /dev/null \
-        --globalconfig /dev/null \
+        --userconfig "$_EMPTY_NPMRC" \
+        --globalconfig "$_EMPTY_NPMRC" \
         --no-package-lock \
         --engine-strict false \
         --legacy-peer-deps \
