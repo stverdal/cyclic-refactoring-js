@@ -5,7 +5,7 @@ results_root: results
 experiment_id: expA
 
 llm:
-  base_url: "http://host.docker.internal:8012/v1"
+  base_url: "http://172.17.0.1:11434/v1"
   api_key: "placeholder"
   model_raw: "/cluster/work/projects/ec12/ec-henrikbo/model-cache/hf/models--Qwen--Qwen3-Coder-30B-A3B-Instruct/snapshots/b2cff646eb4bb1d68355c01b18ae02e7cf42d120"
 

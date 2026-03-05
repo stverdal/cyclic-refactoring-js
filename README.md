@@ -92,7 +92,43 @@ All subject systems must be cloned manually into the directory specified by `pro
 
 Each repository must correspond to an entry in `repos.txt`, which specifies the repository name, base branch, entry directory, and implementation language.
 
+Supported languages are `python`, `csharp`, and `javascript`.
+
 The cycle list used for refactoring is stored in `cycles_to_analyze.txt`. This file is generated automatically using the provided scripts and should not normally be edited manually, unless you want specific cycles to be excluded/included.
+
+---
+
+## JavaScript and TypeScript Support
+
+The pipeline supports JavaScript and TypeScript projects using `javascript` as the language identifier in `repos.txt`. Both `.js` and `.ts` files are handled transparently.
+
+### Dependency Graph Extraction
+
+Dependency graphs are extracted using [dependency-cruiser](https://github.com/sverweij/dependency-cruiser), which resolves `import`/`require` statements to actual files. The extraction script (`ATD_identification/analyze_cycles_jsts.sh`) handles:
+
+* **tsconfig path aliases** — reads `compilerOptions.paths` (e.g. `$lib/*`, `$apis/*`) from `tsconfig.json` and resolves aliased imports to real files on disk. This covers SvelteKit, Next.js, and any project using TypeScript path aliases.
+* **SvelteKit auto-detection** — if `svelte.config.js` is present and `.svelte-kit/` has not been generated, the script runs `npx svelte-kit sync` automatically to produce the generated `tsconfig.json` with framework path aliases.
+* **Monorepo detection** — automatically detects npm/Yarn workspaces (`package.json` workspaces field), pnpm workspaces (`pnpm-workspace.yaml`), and Lerna (`lerna.json`). When detected, `dependency-cruiser` is run across all workspace packages with `--include-only` scoping.
+* **Optional per-repo config** — custom `.dependency-cruiser.js` config files can be placed in `ATD_identification/depcruise-configs/` and passed via `--depcruise-config`. When no config is provided, sensible defaults are used.
+
+### Quality Collection
+
+Quality checks are minimal for v1: `npm test` (auto-detecting Jest, Vitest, or Mocha) and `eslint --format json`. Per-repo test setup scripts can be placed in `code_quality_checker/repo-test-setups-jsts/`.
+
+### Known Limitations
+
+* **Monorepos with per-package tsconfig path aliases** — when workspace packages use different `compilerOptions.paths`, some cross-package imports may not resolve correctly. This is a known limitation of `dependency-cruiser` and is tracked for future work.
+* **Virtual modules** — SvelteKit virtual modules (`$app/*`, `$env/*`) are correctly excluded from the dependency graph.
+
+### Test Case
+
+The included test repo `SINDIT20-Frontend` (SvelteKit + TypeScript) validates the extraction pipeline. Run the assertions with:
+
+```bash
+python3 test_runs/assert_toyjsts_edges.py
+```
+
+See `docs/future_jsts_enhancements.md` for planned improvements including `source_parser` supplementation, expanded quality metrics, and full monorepo support.
 
 ---
 
@@ -145,10 +181,28 @@ scripts/build_cycles_to_analyze.sh -c configs/pipeline.yaml \
   --out cycles_to_analyze.txt
 ```
 
+The `--strategy` flag controls how cycles are selected:
+
+* `balanced` (default) — distributes evenly across cycle sizes with fair repo representation. Designed for experimental breadth.
+* `importance` — ranks all candidate cycles by average PageRank and selects the top N. Cycles involving the most central, highly-depended-on modules are picked first.
+
+Example using importance-based selection:
+
+```bash
+scripts/build_cycles_to_analyze.sh -c configs/pipeline.yaml \
+  --total 10 \
+  --min-size 2 \
+  --max-size 5 \
+  --strategy importance \
+  --out cycles_to_analyze.txt
+```
+
 LLM-based refactoring is performed using:
 
 ```bash
 scripts/run_llm.sh -c configs/pipeline.yaml --modes explain_multiAgent1 --modes explain_multiAgent2
+
+scripts/run_llm.sh -c configs/pipeline.yaml --modes explain_E0_S0_noaux
 ```
 
 Post-refactoring metrics are collected using:

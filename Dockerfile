@@ -7,6 +7,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     docker.io rsync \
  && rm -rf /var/lib/apt/lists/*
 
+# ---- install Node.js LTS (for JS/TS dependency analysis) ----
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g dependency-cruiser \
+ && rm -rf /var/lib/apt/lists/*
+
 # ---- install .NET SDKs ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget gnupg \

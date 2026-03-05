@@ -22,6 +22,7 @@ TOTAL=""
 OUT_PATH="cycles_to_analyze.txt"
 MIN_SIZE=""
 MAX_SIZE=""
+STRATEGY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --out) OUT_PATH="$2"; shift 2 ;;
     --min-size) MIN_SIZE="$2"; shift 2 ;;
     --max-size) MAX_SIZE="$2"; shift 2 ;;
+    --strategy) STRATEGY="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -57,6 +59,7 @@ PY
 ARGS=( --repos-file "$REPOS_FILE" --results-root "$RESULTS_ROOT" --total "$TOTAL" --output "$OUT_PATH" )
 [[ -n "$MIN_SIZE" ]] && ARGS+=( --min-size "$MIN_SIZE" )
 [[ -n "$MAX_SIZE" ]] && ARGS+=( --max-size "$MAX_SIZE" )
+[[ -n "$STRATEGY" ]] && ARGS+=( --strategy "$STRATEGY" )
 
 python3 "$ROOT/ATD_identification/build_cycles_to_analyze.py" "${ARGS[@]}"
 echo "✅ Wrote: $OUT_PATH"

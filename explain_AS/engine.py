@@ -103,9 +103,9 @@ def _get_auxiliary_agent(params: Dict[str, Any]) -> str:
     return aux
 
 
-def _run_minimal(*, cycle: Dict[str, Any]) -> ExplainEngineResult:
-    cycle_nodes = filtered_cycle_nodes([str(n) for n in (cycle.get("nodes") or [])], skip_init=True)
-    prompt = build_minimal_prompt(cycle_nodes)
+def _run_minimal(*, cycle: Dict[str, Any], language: str = "python") -> ExplainEngineResult:
+    cycle_nodes = filtered_cycle_nodes([str(n) for n in (cycle.get("nodes") or [])], skip_init=True, language=language)
+    prompt = build_minimal_prompt(cycle_nodes, language=language)
     return ExplainEngineResult(cycle_nodes=cycle_nodes, final_prompt_text=prompt)
 
 
@@ -126,7 +126,7 @@ def _run_multi_agent(
     auxiliary_agent = _get_auxiliary_agent(params)
 
     raw_nodes = [str(n) for n in (cycle.get("nodes") or [])]
-    cycle_nodes = filtered_cycle_nodes(raw_nodes, skip_init=True)
+    cycle_nodes = filtered_cycle_nodes(raw_nodes, skip_init=True, language=language)
 
     raw_edges = list(cycle.get("edges") or [])
     filtered_edges: List[Edge] = []
@@ -201,7 +201,7 @@ def _run_multi_agent(
         ).strip()
         synthesizer_text = _extract_revised_explanation(reviewer_text).strip() or synthesizer_text
 
-    minimal = build_minimal_prompt(cycle_nodes)
+    minimal = build_minimal_prompt(cycle_nodes, language=language)
 
     explanation_block_parts: List[str] = []
     explanation_block_parts.append("=== Cycle explanation (multi-agent) ===")
@@ -237,7 +237,7 @@ def run_explain_engine(
         raise ValueError("orchestrator must be 'minimal' or 'multi_agent'")
 
     if orchestrator_id == "minimal":
-        return _run_minimal(cycle=cycle)
+        return _run_minimal(cycle=cycle, language=language)
 
     return _run_multi_agent(
         client=client,

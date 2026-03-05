@@ -181,6 +181,12 @@ def main() -> None:
     ap.add_argument("--min-size", type=int, default=None)
     ap.add_argument("--max-size", type=int, default=None)
     ap.add_argument("--ascending-sizes", action="store_true")
+    ap.add_argument("--strategy", choices=["balanced", "importance"], default="balanced",
+                    help=(
+                        "Selection strategy. 'balanced' (default) distributes evenly across "
+                        "cycle sizes with repo fairness. 'importance' ranks all candidates by "
+                        "average PageRank (descending) and picks the top --total cycles."
+                    ))
     ap.add_argument("--output", required=True, help="Path to cycles_to_analyze.txt")
 
     # Catalog generation knobs
@@ -207,6 +213,8 @@ def main() -> None:
 
     # Collect candidates: by_size[size][repo] = [cycle_id...]
     by_size: Dict[int, Dict[str, List[str]]] = defaultdict(lambda: defaultdict(list))
+    # For importance strategy: (repo, cycle_id, size, pagerank_avg)
+    all_candidates: List[Tuple[str, str, int, float]] = []
 
     # Run pick_cycles.py (ALWAYS) to rebuild catalog
     import subprocess
@@ -255,6 +263,8 @@ def main() -> None:
             if args.max_size is not None and sz > args.max_size:
                 continue
             by_size[sz][repo].append(cid)
+            pr_avg = float((cyc.get("metrics") or {}).get("pagerank_avg", 0.0))
+            all_candidates.append((repo, cid, sz, pr_avg))
 
     # Deduplicate + deterministic sort
     for sz in list(by_size.keys()):
@@ -263,6 +273,63 @@ def main() -> None:
 
     if not by_size:
         raise SystemExit("No cycle candidates found. Did you collect baselines (dependency_graph + scc_report)?")
+
+    # ---- Importance-based strategy ----
+    if args.strategy == "importance":
+        # Deduplicate candidates
+        seen_keys: set = set()
+        unique_candidates: List[Tuple[str, str, int, float]] = []
+        for repo, cid, sz, pr_avg in all_candidates:
+            key = (repo, cid)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_candidates.append((repo, cid, sz, pr_avg))
+
+        # Sort by pagerank_avg descending, then cycle size descending, then deterministic
+        unique_candidates.sort(key=lambda c: (-c[3], -c[2], c[0], c[1]))
+
+        selected_imp = unique_candidates[:args.total]
+
+        lines_imp: List[str] = []
+        per_repo_imp: Counter = Counter()
+        per_size_imp: Counter = Counter()
+        for repo, cid, sz, pr_avg in selected_imp:
+            branch = repo_to_branch.get(repo, "main")
+            lines_imp.append(f"{repo} {branch} {cid}")
+            per_repo_imp[repo] += 1
+            per_size_imp[sz] += 1
+
+        out_path.write_text("\n".join(lines_imp) + ("\n" if lines_imp else ""), encoding="utf-8")
+
+        print(f"Strategy: importance (PageRank-based)")
+        print(f"Wrote {len(lines_imp)} lines to {out_path}")
+        if len(lines_imp) < args.total:
+            print(f"[WARN] Requested --total {args.total} but only {len(lines_imp)} candidates available.")
+
+        print(f"Total candidates considered: {len(unique_candidates)}")
+        if selected_imp:
+            print(f"PageRank range: {selected_imp[-1][3]:.6f} .. {selected_imp[0][3]:.6f}")
+
+        print("Selected per size:")
+        for sz in sorted(per_size_imp.keys()):
+            print(f"  size={sz}: {per_size_imp[sz]}")
+
+        print("Selected per repo:")
+        for repo in repos_order:
+            n = per_repo_imp.get(repo, 0)
+            if n > 0:
+                print(f"  {repo}: {n}")
+
+        lang_imp: Counter = Counter()
+        for repo, _cid, _sz, _pr in selected_imp:
+            lang_imp[repo_to_lang.get(repo, "unknown")] += 1
+        print("Selected per programming language:")
+        for lang, n in sorted(lang_imp.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"  {lang}: {n}")
+
+        print("Done.")
+        return
+    # ---- End importance strategy ----
 
     # Sizes to target (exact sizes)
     sizes = sorted(by_size.keys())

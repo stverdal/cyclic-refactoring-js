@@ -15,10 +15,26 @@ def is_init_py(node_id: str) -> bool:
     return normalized_path.endswith("/__init__.py") or normalized_path == "__init__.py"
 
 
-def filtered_cycle_nodes(nodes: List[str], *, skip_init: bool = True) -> List[str]:
+def is_index_js(node_id: str) -> bool:
+    """True for JS/TS barrel files (index.js, index.ts, index.jsx, index.tsx)."""
+    normalized_path = (node_id or "").replace("\\", "/")
+    base = normalized_path.rsplit("/", 1)[-1]
+    return base in ("index.js", "index.ts", "index.jsx", "index.tsx")
+
+
+def is_boilerplate_entry(node_id: str, language: str) -> bool:
+    """True for language-specific boilerplate entry files (__init__.py, index.js, etc.)."""
+    if language == "python":
+        return is_init_py(node_id)
+    if language == "javascript":
+        return is_index_js(node_id)
+    return False
+
+
+def filtered_cycle_nodes(nodes: List[str], *, skip_init: bool = True, language: str = "python") -> List[str]:
     normalized_nodes = [str(n) for n in (nodes or [])]
     if skip_init:
-        normalized_nodes = [n for n in normalized_nodes if not is_init_py(n)]
+        normalized_nodes = [n for n in normalized_nodes if not is_boilerplate_entry(n, language)]
     return normalized_nodes
 
 
@@ -123,6 +139,6 @@ def get_file_text(files_by_node: Dict[str, str], node_id: str) -> str:
 
 
 def require_language(language: Optional[str]) -> str:
-    if language not in ("python", "csharp"):
-        raise ValueError(f"language must be exactly 'python' or 'csharp' (got {language!r})")
+    if language not in ("python", "csharp", "javascript"):
+        raise ValueError(f"language must be 'python', 'csharp', or 'javascript' (got {language!r})")
     return language

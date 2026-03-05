@@ -16,4 +16,12 @@ def edge_semantics_text(language: str) -> str:
             "Unused `using` directives do NOT count. Generated files are excluded upstream."
         )
 
-    raise ValueError(f"Unsupported language {language!r}. Expected exactly 'python' or 'csharp'.")
+    if language == "javascript":
+        return (
+            "Edge semantics (JS/TS): A file A depends on file B if A imports a module whose implementation resides in B "
+            "(via `import`, `require`, or `export … from`). "
+            "`import type` statements (TypeScript type-only imports) do NOT count as dependencies. "
+            "Dynamic `import()` and `require()` calls still count as dependencies unless they are type-only."
+        )
+
+    raise ValueError(f"Unsupported language {language!r}. Expected 'python', 'csharp', or 'javascript'.")

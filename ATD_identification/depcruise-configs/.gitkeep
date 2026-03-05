@@ -1,0 +1,4 @@
+# Per-repo dependency-cruiser configs
+#
+# Place .dependency-cruiser.js files here, named <repo-name>.dependency-cruiser.js
+# These are passed to analyze_cycles_jsts.sh via --depcruise-config <path>

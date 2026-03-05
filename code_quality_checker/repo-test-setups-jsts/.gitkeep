@@ -1,0 +1,5 @@
+# Per-repo JS/TS test setup scripts
+#
+# Place setup files here, named <repo-name>-test-setup.sh
+# These can define QUALITY_INSTALL and/or QUALITY_TEST functions
+# to override the default npm install + test behavior.

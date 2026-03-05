@@ -21,8 +21,8 @@ LLM_MODEL="${LLM_MODEL:-}"
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 LLM_API_KEY="${LLM_API_KEY:-}"
 
-OPENHANDS_IMAGE="${OPENHANDS_IMAGE:-docker.all-hands.dev/all-hands-ai/openhands:0.59}"
-RUNTIME_IMAGE="${RUNTIME_IMAGE:-docker.all-hands.dev/all-hands-ai/runtime:0.59-nikolaik}"
+OPENHANDS_IMAGE="${OPENHANDS_IMAGE:-docker.all-hands.dev/all-hands-ai/openhands:0.68}"
+RUNTIME_IMAGE="${RUNTIME_IMAGE:-docker.all-hands.dev/all-hands-ai/runtime:0.68-nikolaik}"
 MAX_ITERS="${MAX_ITERS:-100}"
 COMMIT_MESSAGE="${COMMIT_MESSAGE:-Refactor: break dependency cycle}"
 
@@ -245,6 +245,8 @@ run_docker() {
   cmd+=("${NETWORK_FLAGS[@]}")
 
   cmd+=(
+    --add-host=host.docker.internal:host-gateway
+    --dns 8.8.8.8
     -v /var/run/docker.sock:/var/run/docker.sock
     -v "$WT_HOST:/workspace:rw"
     -v "$OUT_DIR_HOST:/logs:rw"
@@ -253,6 +255,7 @@ run_docker() {
     -e FILE_STORE=local
     -e FILE_STORE_PATH=/logs/openhands_store
 
+    -e DOCKER_HOST_ADDR=172.17.0.1
     -e SANDBOX_RUNTIME_CONTAINER_IMAGE="$RUNTIME_IMAGE"
     -e SANDBOX_USER_ID="$HOST_UID"
     -e SANDBOX_VOLUMES="$WT_HOST:/workspace:rw,$OUT_DIR_HOST:/logs:rw"

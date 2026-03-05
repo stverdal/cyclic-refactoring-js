@@ -5,7 +5,7 @@ set -euo pipefail
 #   branch_metrics_collect.sh <repo_dir> <target_branch> <entry> <out_dir> <baseline_branch> <language>
 #
 # language:
-#   python | csharp
+#   python | csharp | javascript
 
 if [[ $# -ne 6 ]]; then
   echo "Usage: $0 <repo_dir> <target_branch> <entry> <out_dir> <baseline_branch> <language>" >&2
@@ -27,19 +27,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 ANALYZE_PY_SH="$ROOT/ATD_identification/analyze_cycles.sh"
 ANALYZE_CS_SH="$ROOT/ATD_identification/analyze_cycles_dotnet.sh"
+ANALYZE_JS_SH="$ROOT/ATD_identification/analyze_cycles_jsts.sh"
 EXTRACT_SCCS_PY="$ROOT/ATD_identification/extract_sccs.py"
 
 QUALITY_PY_SH="$ROOT/code_quality_checker/quality_collect.sh"
 QUALITY_CS_SH="$ROOT/code_quality_checker/quality_collect_csharp.sh"
+QUALITY_JS_SH="$ROOT/code_quality_checker/quality_collect_jsts.sh"
 
 SUM_PY="$ROOT/code_quality_checker/quality_single_summary.py"
 SUM_CS="$ROOT/code_quality_checker/quality_single_summary_csharp.py"
+SUM_JS="$ROOT/code_quality_checker/quality_single_summary_jsts.py"
 
 [[ -d "$REPO_DIR/.git" ]] || { echo "Not a git repo: $REPO_DIR" >&2; exit 3; }
 [[ -f "$EXTRACT_SCCS_PY" ]] || { echo "Missing: $EXTRACT_SCCS_PY" >&2; exit 3; }
 
-if [[ "$LANGUAGE" != "python" && "$LANGUAGE" != "csharp" ]]; then
-  echo "ERROR: unsupported language '$LANGUAGE' (expected: python|csharp)" >&2
+if [[ "$LANGUAGE" != "python" && "$LANGUAGE" != "csharp" && "$LANGUAGE" != "javascript" ]]; then
+  echo "ERROR: unsupported language '$LANGUAGE' (expected: python|csharp|javascript)" >&2
   exit 3
 fi
 
@@ -47,6 +50,10 @@ if [[ "$LANGUAGE" == "csharp" ]]; then
   [[ -f "$ANALYZE_CS_SH" ]] || { echo "Missing: $ANALYZE_CS_SH" >&2; exit 3; }
   [[ -f "$QUALITY_CS_SH" ]] || { echo "Missing: $QUALITY_CS_SH" >&2; exit 3; }
   [[ -f "$SUM_CS" ]] || { echo "Missing: $SUM_CS" >&2; exit 3; }
+elif [[ "$LANGUAGE" == "javascript" ]]; then
+  [[ -f "$ANALYZE_JS_SH" ]] || { echo "Missing: $ANALYZE_JS_SH" >&2; exit 3; }
+  [[ -f "$QUALITY_JS_SH" ]] || { echo "Missing: $QUALITY_JS_SH" >&2; exit 3; }
+  [[ -f "$SUM_JS" ]] || { echo "Missing: $SUM_JS" >&2; exit 3; }
 else
   [[ -f "$ANALYZE_PY_SH" ]] || { echo "Missing: $ANALYZE_PY_SH" >&2; exit 3; }
   [[ -f "$QUALITY_PY_SH" ]] || { echo "Missing: $QUALITY_PY_SH" >&2; exit 3; }
@@ -107,6 +114,8 @@ echo "Out      : $OUT_DIR"
 echo "== Step: dependency graph extraction =="
 if [[ "$LANGUAGE" == "csharp" ]]; then
   bash "$ANALYZE_CS_SH" "$REPO_DIR" "$ENTRY" "$ATD_DIR"
+elif [[ "$LANGUAGE" == "javascript" ]]; then
+  bash "$ANALYZE_JS_SH" "$REPO_DIR" "$ENTRY" "$ATD_DIR"
 else
   bash "$ANALYZE_PY_SH" "$REPO_DIR" "$ENTRY" "$ATD_DIR"
 fi
@@ -122,6 +131,8 @@ python3 "$EXTRACT_SCCS_PY" "$GRAPH_JSON" --out "$SCC_REPORT"
 echo "== Step: code quality =="
 if [[ "$LANGUAGE" == "csharp" ]]; then
   OUT_DIR="$QC_DIR" bash "$QUALITY_CS_SH" "$REPO_DIR" "$TARGET_BRANCH" || true
+elif [[ "$LANGUAGE" == "javascript" ]]; then
+  OUT_DIR="$QC_DIR" bash "$QUALITY_JS_SH" "$REPO_DIR" "$TARGET_BRANCH" "$ENTRY" || true
 else
   OUT_DIR="$QC_DIR" bash "$QUALITY_PY_SH" "$REPO_DIR" "$TARGET_BRANCH" "$ENTRY" || true
 fi
@@ -129,6 +140,8 @@ fi
 echo "== Step: quality summary =="
 if [[ "$LANGUAGE" == "csharp" ]]; then
   python3 "$SUM_CS" "$QC_DIR" "$QC_DIR/metrics.json" || true
+elif [[ "$LANGUAGE" == "javascript" ]]; then
+  python3 "$SUM_JS" "$QC_DIR" "$QC_DIR/metrics.json" || true
 else
   python3 "$SUM_PY" "$QC_DIR" "$QC_DIR/metrics.json" || true
 fi
