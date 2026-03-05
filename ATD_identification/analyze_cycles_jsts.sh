@@ -209,25 +209,31 @@ _restore_npmrc() {
 }
 trap '_restore_npmrc' EXIT
 
+: "${NPM_INSTALL_TIMEOUT:=60}"
+
 if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REPO_PATH/pnpm-lock.yaml" ]]; then
-  echo "  Attempt 1: npm install (bypass all .npmrc via env vars)..."
-  ( cd "$REPO_PATH" && \
-    npm install \
+  echo "  Attempt 1: npm install (timeout ${NPM_INSTALL_TIMEOUT}s, bypass all .npmrc via env vars)..."
+  timeout "${NPM_INSTALL_TIMEOUT}" bash -c '
+    cd "$1" && npm install \
       --ignore-scripts \
       --engine-strict false \
       --legacy-peer-deps \
-      2>&1 ) && _npm_ok=true
+      --prefer-offline \
+      2>&1
+  ' _ "$REPO_PATH" && _npm_ok=true || echo "  npm install exited with $? (may have timed out)"
 
   # Attempt 2: if node_modules still missing, try without the lockfile
   if [[ ! -d "$REPO_PATH/node_modules" ]]; then
-    echo "  Attempt 2: npm install without lockfile..."
-    ( cd "$REPO_PATH" && \
-      npm install \
+    echo "  Attempt 2: npm install without lockfile (timeout ${NPM_INSTALL_TIMEOUT}s)..."
+    timeout "${NPM_INSTALL_TIMEOUT}" bash -c '
+      cd "$1" && npm install \
         --ignore-scripts \
         --no-package-lock \
         --engine-strict false \
         --legacy-peer-deps \
-        2>&1 ) && _npm_ok=true
+        --prefer-offline \
+        2>&1
+    ' _ "$REPO_PATH" && _npm_ok=true || echo "  npm install exited with $? (may have timed out)"
   else
     _npm_ok=true
   fi
@@ -236,10 +242,11 @@ if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REP
     _npm_ok=true
     echo "  ✔ node_modules present"
   else
-    echo "  ⚠ WARNING: npm install failed — node_modules not created."
-    echo '    Path alias resolution ($lib/*, $apis/*, etc.) will not work.'
-    echo '    Cycles depending on aliased imports will be MISSED.'
-    echo "    Fix: manually run 'npm install' in $REPO_PATH, then re-run."
+    echo "  ⚠ WARNING: npm install failed or timed out — node_modules not created."
+    echo "    This is OK for cycle detection: local imports and tsconfig aliases"
+    echo "    are resolved from source code without needing node_modules."
+    echo "    Only npm package imports (which are filtered out anyway) are affected."
+    echo "    To install manually: cd $REPO_PATH && npm install"
   fi
 fi
 

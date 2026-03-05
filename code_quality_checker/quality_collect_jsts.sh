@@ -155,12 +155,18 @@ _restore_npmrc() {
 trap '_restore_npmrc' EXIT
 
 # Default install if no custom QUALITY_INSTALL was defined
+: "${NPM_INSTALL_TIMEOUT:=60}"
+
 if ! declare -f QUALITY_INSTALL >/dev/null 2>&1; then
-  npm install \
-    --ignore-scripts \
-    --engine-strict false \
-    --legacy-peer-deps \
-    2>&1 | tail -20 || true
+  echo "  npm install (timeout ${NPM_INSTALL_TIMEOUT}s)..."
+  timeout "${NPM_INSTALL_TIMEOUT}" bash -c '
+    cd "$1" && npm install \
+      --ignore-scripts \
+      --engine-strict false \
+      --legacy-peer-deps \
+      --prefer-offline \
+      2>&1 | tail -20
+  ' _ "$WT_ROOT" || echo "  ⚠ npm install exited with $? (timed out or failed — continuing)"
 else
   echo "Using custom QUALITY_INSTALL for $REPO_NAME"
   QUALITY_INSTALL
@@ -184,12 +190,12 @@ run_tests() {
   fi
 
   # Try jest with JUnit reporter first
-  if npx jest --version >/dev/null 2>&1; then
+  if timeout 10 npx --no-install jest --version >/dev/null 2>&1; then
     echo "Detected Jest"
-    # Install jest-junit reporter if not already present
-    npm install --save-dev jest-junit 2>/dev/null || true
+    # Install jest-junit reporter if not already present (timeout to avoid auth hangs)
+    timeout 30 npm install --save-dev jest-junit --prefer-offline 2>/dev/null || true
     timeout -k 30s "$JSTS_TEST_TIMEOUT" \
-      npx jest --ci \
+      npx --no-install jest --ci \
         --reporters=default --reporters=jest-junit \
         --forceExit \
         2>&1 | tee "$TEST_LOG" || true
@@ -202,19 +208,20 @@ run_tests() {
     return $JEST_RC
 
   # Try vitest
-  elif npx vitest --version >/dev/null 2>&1; then
+  elif timeout 10 npx --no-install vitest --version >/dev/null 2>&1; then
     echo "Detected Vitest"
     timeout -k 30s "$JSTS_TEST_TIMEOUT" \
-      npx vitest run --reporter=junit --outputFile "$OUT_ABS/test_results.xml" \
+      npx --no-install vitest run --reporter=junit --outputFile "$OUT_ABS/test_results.xml" \
         2>&1 | tee "$TEST_LOG" || true
     return ${PIPESTATUS[0]}
 
   # Try mocha
-  elif npx mocha --version >/dev/null 2>&1; then
+  elif timeout 10 npx --no-install mocha --version >/dev/null 2>&1; then
     echo "Detected Mocha"
-    npm install --save-dev mocha-junit-reporter 2>/dev/null || true
+    # Install reporter if not already present (timeout to avoid auth hangs)
+    timeout 30 npm install --save-dev mocha-junit-reporter --prefer-offline 2>/dev/null || true
     timeout -k 30s "$JSTS_TEST_TIMEOUT" \
-      npx mocha --reporter mocha-junit-reporter \
+      npx --no-install mocha --reporter mocha-junit-reporter \
         --reporter-options mochaFile="$OUT_ABS/test_results.xml" \
         2>&1 | tee "$TEST_LOG" || true
     return ${PIPESTATUS[0]}
@@ -244,14 +251,14 @@ fi
 echo "== Step: ESLint =="
 if declare -F timing_mark >/dev/null 2>&1; then timing_mark "start_eslint"; fi
 
-if npx eslint --version >/dev/null 2>&1; then
+if timeout 10 npx --no-install eslint --version >/dev/null 2>&1; then
   # Determine what to lint
   ESLINT_TARGET="$SRC_DIR"
   if [[ "$ESLINT_TARGET" == "." ]]; then
     ESLINT_TARGET="."
   fi
 
-  npx eslint "$ESLINT_TARGET" \
+  npx --no-install eslint "$ESLINT_TARGET" \
     --format json \
     --no-error-on-unmatched-pattern \
     -o "$OUT_ABS/eslint.json" \
@@ -266,9 +273,9 @@ if declare -F timing_mark >/dev/null 2>&1; then timing_mark "end_eslint"; fi
 {
   echo -n "node: "; node --version || true
   echo -n "npm: "; npm --version || true
-  echo -n "eslint: "; npx eslint --version 2>/dev/null || echo "not installed"
-  echo -n "jest: "; npx jest --version 2>/dev/null || echo "not installed"
-  echo -n "vitest: "; npx vitest --version 2>/dev/null || echo "not installed"
+  echo -n "eslint: "; timeout 5 npx --no-install eslint --version 2>/dev/null || echo "not installed"
+  echo -n "jest: "; timeout 5 npx --no-install jest --version 2>/dev/null || echo "not installed"
+  echo -n "vitest: "; timeout 5 npx --no-install vitest --version 2>/dev/null || echo "not installed"
 } > "$OUT_ABS/tool_versions.txt" 2>&1 || true
 
 npm ls --depth=0 > "$OUT_ABS/npm_ls.txt" 2>&1 || true
