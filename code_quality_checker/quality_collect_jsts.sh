@@ -121,17 +121,24 @@ if [[ -f "$REPO_SETUP_FILE" ]]; then
   source "$REPO_SETUP_FILE"
 fi
 
-# Force public registry via env var (overrides ALL .npmrc files: project,
-# user, global, and built-in).
-# Create a temporary empty .npmrc to bypass any .npmrc with expired/revoked
-# auth tokens. NOTE: --userconfig /dev/null does NOT work — some npm versions
-# crash with "double loading config /dev/null".
-export npm_config_registry=https://registry.npmjs.org
-_EMPTY_NPMRC="$(mktemp /tmp/.npmrc-empty-XXXXXX)"
+# Neutralise ALL .npmrc files so expired/revoked auth tokens cannot cause E401.
+# Strategy:
+#   1. Set npm_config_registry env var        → overrides registry in any .npmrc
+#   2. Set npm_config_userconfig env var       → points user config to empty file
+#   3. Set npm_config_globalconfig env var     → points global config to empty file
+#   4. Move aside the project-level .npmrc     → npm always reads it, no flag to skip
+#
+# Using env vars instead of --userconfig/--globalconfig flags avoids the npm bug
+# "double loading config, previously loaded as user" that occurs when both flags
+# resolve to the same path or to /dev/null.
 
-# Also temporarily hide the PROJECT-LEVEL .npmrc — npm always reads it and
-# there is NO flag to skip it. If it contains auth tokens for a private
-# registry, npm install will fail with E401 regardless of --userconfig.
+export npm_config_registry=https://registry.npmjs.org
+
+_EMPTY_USER_NPMRC="$(mktemp /tmp/.npmrc-user-XXXXXX)"
+_EMPTY_GLOBAL_NPMRC="$(mktemp /tmp/.npmrc-global-XXXXXX)"
+export npm_config_userconfig="$_EMPTY_USER_NPMRC"
+export npm_config_globalconfig="$_EMPTY_GLOBAL_NPMRC"
+
 _PROJ_NPMRC_MOVED=false
 if [[ -f "$WT_ROOT/.npmrc" ]]; then
   echo "  Moving aside project .npmrc (may contain expired auth tokens)..."
@@ -143,15 +150,14 @@ _restore_npmrc() {
   if [[ "$_PROJ_NPMRC_MOVED" == true && -f "$WT_ROOT/.npmrc.atd-bak" ]]; then
     mv "$WT_ROOT/.npmrc.atd-bak" "$WT_ROOT/.npmrc"
   fi
-  rm -f "$_EMPTY_NPMRC"
+  rm -f "$_EMPTY_USER_NPMRC" "$_EMPTY_GLOBAL_NPMRC"
 }
 trap '_restore_npmrc' EXIT
 
 # Default install if no custom QUALITY_INSTALL was defined
 if ! declare -f QUALITY_INSTALL >/dev/null 2>&1; then
   npm install \
-    --userconfig "$_EMPTY_NPMRC" \
-    --globalconfig "$_EMPTY_NPMRC" \
+    --ignore-scripts \
     --engine-strict false \
     --legacy-peer-deps \
     2>&1 | tail -20 || true
@@ -181,7 +187,7 @@ run_tests() {
   if npx jest --version >/dev/null 2>&1; then
     echo "Detected Jest"
     # Install jest-junit reporter if not already present
-    npm install --save-dev jest-junit --userconfig "$_EMPTY_NPMRC" --globalconfig "$_EMPTY_NPMRC" 2>/dev/null || true
+    npm install --save-dev jest-junit 2>/dev/null || true
     timeout -k 30s "$JSTS_TEST_TIMEOUT" \
       npx jest --ci \
         --reporters=default --reporters=jest-junit \
@@ -206,7 +212,7 @@ run_tests() {
   # Try mocha
   elif npx mocha --version >/dev/null 2>&1; then
     echo "Detected Mocha"
-    npm install --save-dev mocha-junit-reporter --userconfig "$_EMPTY_NPMRC" --globalconfig "$_EMPTY_NPMRC" 2>/dev/null || true
+    npm install --save-dev mocha-junit-reporter 2>/dev/null || true
     timeout -k 30s "$JSTS_TEST_TIMEOUT" \
       npx mocha --reporter mocha-junit-reporter \
         --reporter-options mochaFile="$OUT_ABS/test_results.xml" \

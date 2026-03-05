@@ -176,19 +176,27 @@ fi
 echo "== Step 1: ensure dependencies are installed =="
 _npm_ok=false
 
-# Create a temporary empty .npmrc to override any project/user/global .npmrc
-# that may contain expired/revoked auth tokens (causes E401 in Docker).
-# NOTE: --userconfig /dev/null does NOT work — some npm versions crash with
-# "double loading config /dev/null, previously loaded as user".
-_EMPTY_NPMRC="$(mktemp /tmp/.npmrc-empty-XXXXXX)"
-trap 'rm -f "$_EMPTY_NPMRC"' EXIT
+# Neutralise ALL .npmrc files so expired/revoked auth tokens cannot cause E401.
+# Strategy:
+#   1. Set npm_config_registry env var        → overrides registry in any .npmrc
+#   2. Set npm_config_userconfig env var       → points user config to empty file
+#   3. Set npm_config_globalconfig env var     → points global config to empty file
+#   4. Move aside the project-level .npmrc     → npm always reads it, no flag to skip
+#
+# Using env vars instead of --userconfig/--globalconfig flags avoids the npm bug
+# "double loading config /dev/null, previously loaded as user" that occurs when
+# both flags resolve to the same path.
 
-# Also temporarily hide the PROJECT-LEVEL .npmrc — npm always reads it and
-# there is NO flag to skip it. If it contains auth tokens for a private
-# registry, npm install will fail with E401 regardless of --userconfig.
+export npm_config_registry=https://registry.npmjs.org
+
+_EMPTY_USER_NPMRC="$(mktemp /tmp/.npmrc-user-XXXXXX)"
+_EMPTY_GLOBAL_NPMRC="$(mktemp /tmp/.npmrc-global-XXXXXX)"
+export npm_config_userconfig="$_EMPTY_USER_NPMRC"
+export npm_config_globalconfig="$_EMPTY_GLOBAL_NPMRC"
+
 _PROJ_NPMRC_MOVED=false
 if [[ -f "$REPO_PATH/.npmrc" ]]; then
-  echo "  Moving aside project .npmrc (contains auth tokens)..."
+  echo "  Moving aside project .npmrc (may contain expired auth tokens)..."
   mv "$REPO_PATH/.npmrc" "$REPO_PATH/.npmrc.atd-bak"
   _PROJ_NPMRC_MOVED=true
 fi
@@ -197,18 +205,15 @@ _restore_npmrc() {
   if [[ "$_PROJ_NPMRC_MOVED" == true && -f "$REPO_PATH/.npmrc.atd-bak" ]]; then
     mv "$REPO_PATH/.npmrc.atd-bak" "$REPO_PATH/.npmrc"
   fi
-  rm -f "$_EMPTY_NPMRC"
+  rm -f "$_EMPTY_USER_NPMRC" "$_EMPTY_GLOBAL_NPMRC"
 }
 trap '_restore_npmrc' EXIT
 
 if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REPO_PATH/pnpm-lock.yaml" ]]; then
-  echo "  Attempt 1: npm install (bypass all .npmrc)..."
+  echo "  Attempt 1: npm install (bypass all .npmrc via env vars)..."
   ( cd "$REPO_PATH" && \
-    npm_config_registry=https://registry.npmjs.org \
     npm install \
       --ignore-scripts \
-      --userconfig "$_EMPTY_NPMRC" \
-      --globalconfig "$_EMPTY_NPMRC" \
       --engine-strict false \
       --legacy-peer-deps \
       2>&1 ) && _npm_ok=true
@@ -217,11 +222,8 @@ if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REP
   if [[ ! -d "$REPO_PATH/node_modules" ]]; then
     echo "  Attempt 2: npm install without lockfile..."
     ( cd "$REPO_PATH" && \
-      npm_config_registry=https://registry.npmjs.org \
       npm install \
         --ignore-scripts \
-        --userconfig "$_EMPTY_NPMRC" \
-        --globalconfig "$_EMPTY_NPMRC" \
         --no-package-lock \
         --engine-strict false \
         --legacy-peer-deps \
