@@ -175,7 +175,26 @@ fi
 # ---- Step 1: Install dependencies if needed ----
 echo "== Step 1: ensure dependencies are installed =="
 if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REPO_PATH/pnpm-lock.yaml" ]]; then
-  ( cd "$REPO_PATH" && npm install --ignore-scripts 2>/dev/null || true )
+  # Temporarily neutralize any .npmrc that contains auth tokens pointing at
+  # private registries (causes E401 inside Docker where tokens are invalid).
+  _npmrc_moved=false
+  if [[ -f "$REPO_PATH/.npmrc" ]] && grep -qiE '(authToken|_auth|//.*registry)' "$REPO_PATH/.npmrc" 2>/dev/null; then
+    mv "$REPO_PATH/.npmrc" "$REPO_PATH/.npmrc.bak"
+    _npmrc_moved=true
+    echo "  (temporarily moved .npmrc aside — contains auth tokens)"
+  fi
+
+  ( cd "$REPO_PATH" && npm install \
+      --ignore-scripts \
+      --registry https://registry.npmjs.org \
+      --engine-strict false \
+      --legacy-peer-deps \
+      2>&1 || true )
+
+  # Restore .npmrc
+  if [[ "$_npmrc_moved" == true ]]; then
+    mv "$REPO_PATH/.npmrc.bak" "$REPO_PATH/.npmrc"
+  fi
 fi
 
 # ---- Step 1b: SvelteKit sync (generate .svelte-kit/tsconfig.json) ----
