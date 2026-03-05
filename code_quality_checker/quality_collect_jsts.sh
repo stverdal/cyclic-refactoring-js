@@ -121,30 +121,21 @@ if [[ -f "$REPO_SETUP_FILE" ]]; then
   source "$REPO_SETUP_FILE"
 fi
 
-# Temporarily neutralize any .npmrc that contains auth tokens pointing at
-# private registries (causes E401 inside Docker where tokens are invalid).
-_npmrc_moved=false
-if [[ -f "$WT_ROOT/.npmrc" ]] && grep -qiE '(authToken|_auth|//.*registry)' "$WT_ROOT/.npmrc" 2>/dev/null; then
-  mv "$WT_ROOT/.npmrc" "$WT_ROOT/.npmrc.bak"
-  _npmrc_moved=true
-  echo "  (temporarily moved .npmrc aside — contains auth tokens)"
-fi
+# Force public registry via env var (overrides ALL .npmrc files: project,
+# user, global, and built-in) and --userconfig /dev/null to skip any
+# .npmrc that embeds expired/revoked auth tokens (causes E401 in Docker).
+export npm_config_registry=https://registry.npmjs.org
 
 # Default install if no custom QUALITY_INSTALL was defined
 if ! declare -f QUALITY_INSTALL >/dev/null 2>&1; then
   npm install \
-    --registry https://registry.npmjs.org \
+    --userconfig /dev/null \
     --engine-strict false \
     --legacy-peer-deps \
     2>&1 | tail -20 || true
 else
   echo "Using custom QUALITY_INSTALL for $REPO_NAME"
   QUALITY_INSTALL
-fi
-
-# Restore .npmrc
-if [[ "$_npmrc_moved" == true ]]; then
-  mv "$WT_ROOT/.npmrc.bak" "$WT_ROOT/.npmrc"
 fi
 
 if declare -F timing_mark >/dev/null 2>&1; then timing_mark "end_npmInstall"; fi
@@ -168,7 +159,7 @@ run_tests() {
   if npx jest --version >/dev/null 2>&1; then
     echo "Detected Jest"
     # Install jest-junit reporter if not already present
-    npm install --save-dev jest-junit --registry https://registry.npmjs.org 2>/dev/null || true
+    npm install --save-dev jest-junit --userconfig /dev/null 2>/dev/null || true
     timeout -k 30s "$JSTS_TEST_TIMEOUT" \
       npx jest --ci \
         --reporters=default --reporters=jest-junit \
@@ -193,7 +184,7 @@ run_tests() {
   # Try mocha
   elif npx mocha --version >/dev/null 2>&1; then
     echo "Detected Mocha"
-    npm install --save-dev mocha-junit-reporter --registry https://registry.npmjs.org 2>/dev/null || true
+    npm install --save-dev mocha-junit-reporter --userconfig /dev/null 2>/dev/null || true
     timeout -k 30s "$JSTS_TEST_TIMEOUT" \
       npx mocha --reporter mocha-junit-reporter \
         --reporter-options mochaFile="$OUT_ABS/test_results.xml" \

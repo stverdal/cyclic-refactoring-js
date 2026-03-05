@@ -174,26 +174,47 @@ fi
 
 # ---- Step 1: Install dependencies if needed ----
 echo "== Step 1: ensure dependencies are installed =="
+_npm_ok=false
 if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REPO_PATH/pnpm-lock.yaml" ]]; then
-  # Temporarily neutralize any .npmrc that contains auth tokens pointing at
-  # private registries (causes E401 inside Docker where tokens are invalid).
-  _npmrc_moved=false
-  if [[ -f "$REPO_PATH/.npmrc" ]] && grep -qiE '(authToken|_auth|//.*registry)' "$REPO_PATH/.npmrc" 2>/dev/null; then
-    mv "$REPO_PATH/.npmrc" "$REPO_PATH/.npmrc.bak"
-    _npmrc_moved=true
-    echo "  (temporarily moved .npmrc aside — contains auth tokens)"
-  fi
-
-  ( cd "$REPO_PATH" && npm install \
+  # Force public registry via env var (overrides ALL .npmrc files: project,
+  # user, global, and built-in). Use --userconfig and --globalconfig /dev/null
+  # to fully bypass any .npmrc that embeds expired/revoked auth tokens.
+  echo "  Attempt 1: npm install (bypass all .npmrc)..."
+  ( cd "$REPO_PATH" && \
+    npm_config_registry=https://registry.npmjs.org \
+    npm install \
       --ignore-scripts \
-      --registry https://registry.npmjs.org \
+      --userconfig /dev/null \
+      --globalconfig /dev/null \
       --engine-strict false \
       --legacy-peer-deps \
-      2>&1 || true )
+      2>&1 ) && _npm_ok=true
 
-  # Restore .npmrc
-  if [[ "$_npmrc_moved" == true ]]; then
-    mv "$REPO_PATH/.npmrc.bak" "$REPO_PATH/.npmrc"
+  # Attempt 2: if node_modules still missing, try without the lockfile
+  if [[ ! -d "$REPO_PATH/node_modules" ]]; then
+    echo "  Attempt 2: npm install without lockfile..."
+    ( cd "$REPO_PATH" && \
+      npm_config_registry=https://registry.npmjs.org \
+      npm install \
+        --ignore-scripts \
+        --userconfig /dev/null \
+        --globalconfig /dev/null \
+        --no-package-lock \
+        --engine-strict false \
+        --legacy-peer-deps \
+        2>&1 ) && _npm_ok=true
+  else
+    _npm_ok=true
+  fi
+
+  if [[ -d "$REPO_PATH/node_modules" ]]; then
+    _npm_ok=true
+    echo "  ✔ node_modules present"
+  else
+    echo "  ⚠ WARNING: npm install failed — node_modules not created."
+    echo '    Path alias resolution ($lib/*, $apis/*, etc.) will not work.'
+    echo '    Cycles depending on aliased imports will be MISSED.'
+    echo "    Fix: manually run 'npm install' in $REPO_PATH, then re-run."
   fi
 fi
 
@@ -201,8 +222,17 @@ fi
 TSCONFIG_PATH=""
 if [[ -f "$REPO_PATH/svelte.config.js" || -f "$REPO_PATH/svelte.config.ts" ]]; then
   if [[ ! -d "$REPO_PATH/.svelte-kit" ]]; then
-    echo "SvelteKit project detected — running 'npx svelte-kit sync'..."
-    ( cd "$REPO_PATH" && npx svelte-kit sync 2>/dev/null || true )
+    if [[ "$_npm_ok" == true ]]; then
+      echo "SvelteKit project detected — running 'npx svelte-kit sync'..."
+      ( cd "$REPO_PATH" && npx svelte-kit sync 2>&1 || true )
+      if [[ ! -d "$REPO_PATH/.svelte-kit" ]]; then
+        echo '  ⚠ WARNING: svelte-kit sync failed — .svelte-kit/ not generated.'
+        echo '    tsconfig path aliases ($lib, $apis) will not be resolved.'
+      fi
+    else
+      echo '  ⚠ WARNING: skipping svelte-kit sync (npm install failed).'
+      echo '    tsconfig path aliases ($lib, $apis) will not be resolved.'
+    fi
   fi
 fi
 
