@@ -210,36 +210,32 @@ _restore_npmrc() {
 trap '_restore_npmrc' EXIT
 
 : "${NPM_INSTALL_TIMEOUT:=60}"
+NPM_LOG="$OUTPUT_DIR/npm_install.log"
+: > "$NPM_LOG"
 
-if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REPO_PATH/pnpm-lock.yaml" ]]; then
-  NPM_LOG="$OUTPUT_DIR/npm_install.log"
-  echo "  Attempt 1: npm install (timeout ${NPM_INSTALL_TIMEOUT}s, bypass all .npmrc via env vars)..."
-  echo "=== npm install attempt 1 ==="  > "$NPM_LOG"
+# When the project had an .npmrc (private registry), the lockfile contains
+# hardcoded private-registry URLs in "resolved" fields.  npm follows those
+# URLs directly regardless of --registry / npm_config_registry overrides,
+# so the install hangs waiting for auth.  Skip the full install and go
+# straight to the targeted typescript-only install (Step 1a).
+if [[ "$_PROJ_NPMRC_MOVED" == true ]]; then
+  echo "  ⚠ Project uses a private registry (.npmrc was present)."
+  echo "    Skipping full npm install (lockfile contains private URLs that cause hangs)."
+  echo "    Will install only the parser packages needed by dependency-cruiser (Step 1a)."
+  echo "=== skipped: project .npmrc indicates private registry ===" >> "$NPM_LOG"
+
+elif [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REPO_PATH/pnpm-lock.yaml" ]]; then
+  echo "  npm install (timeout ${NPM_INSTALL_TIMEOUT}s, bypass all .npmrc via env vars)..."
+  echo "=== npm install ===" >> "$NPM_LOG"
   timeout "${NPM_INSTALL_TIMEOUT}" bash -c '
     cd "$1" && npm install \
       --ignore-scripts \
+      --no-package-lock \
       --engine-strict false \
       --legacy-peer-deps \
       --prefer-offline \
       2>&1
   ' _ "$REPO_PATH" >> "$NPM_LOG" 2>&1 && _npm_ok=true || echo "  npm install exited with $? (may have timed out)"
-
-  # Attempt 2: if node_modules still missing, try without the lockfile
-  if [[ ! -d "$REPO_PATH/node_modules" ]]; then
-    echo "  Attempt 2: npm install without lockfile (timeout ${NPM_INSTALL_TIMEOUT}s)..."
-    echo "=== npm install attempt 2 (no lockfile) ===" >> "$NPM_LOG"
-    timeout "${NPM_INSTALL_TIMEOUT}" bash -c '
-      cd "$1" && npm install \
-        --ignore-scripts \
-        --no-package-lock \
-        --engine-strict false \
-        --legacy-peer-deps \
-        --prefer-offline \
-        2>&1
-    ' _ "$REPO_PATH" >> "$NPM_LOG" 2>&1 && _npm_ok=true || echo "  npm install exited with $? (may have timed out)"
-  else
-    _npm_ok=true
-  fi
 
   # Show which packages triggered auth errors
   if grep -qi 'E401\|401 Unauthorized\|expired\|revoked' "$NPM_LOG" 2>/dev/null; then
@@ -254,45 +250,62 @@ if [[ -f "$REPO_PATH/package-lock.json" || -f "$REPO_PATH/yarn.lock" || -f "$REP
   else
     echo "  ⚠ WARNING: npm install failed or timed out — node_modules not created."
     echo "    Will attempt to install parser packages (typescript, etc.) individually."
-    echo "    To install all deps manually: cd $REPO_PATH && npm install"
   fi
 fi
 
 # ---- Step 1a: Ensure parser packages are available for dependency-cruiser ----
 # dependency-cruiser NEEDS the 'typescript' package to parse .ts/.tsx files.
 # Without it, depcruise falls back to acorn (JS-only) and silently skips all TS
-# files, producing a tiny/empty graph.  These are public packages and don't need
-# auth tokens from a private registry.
-if [[ ! -d "$REPO_PATH/node_modules/typescript" ]]; then
-  echo "== Step 1a: install TypeScript parser (required by dependency-cruiser) =="
-  ( cd "$REPO_PATH" && \
-    timeout 30 npm install --no-save --ignore-scripts --legacy-peer-deps \
-      typescript 2>&1 \
-  ) >> "${NPM_LOG:-/dev/null}" 2>&1 && \
-    echo "  ✔ typescript installed" || \
-    echo "  ⚠ WARNING: failed to install typescript — .ts files may not be parsed"
-fi
+# files, producing a tiny/empty graph.
+#
+# depcruise is installed GLOBALLY but we may not have root to install globally.
+# Strategy: install into the project's node_modules via a sandboxed npm (clean
+# temp dir — immune to the project's .npmrc / lockfile), then use NODE_PATH on
+# the depcruise call so Node can find the package.
 
-# Framework-specific parsers (public packages)
-if [[ -f "$REPO_PATH/svelte.config.js" || -f "$REPO_PATH/svelte.config.ts" ]]; then
-  if [[ ! -d "$REPO_PATH/node_modules/svelte" ]]; then
-    echo "  Installing svelte parser..."
-    ( cd "$REPO_PATH" && \
-      timeout 30 npm install --no-save --ignore-scripts --legacy-peer-deps \
-        svelte 2>&1 \
-    ) >> "${NPM_LOG:-/dev/null}" 2>&1 || true
+_install_parser_sandboxed() {
+  local pkg="$1"
+  local dest="$REPO_PATH/node_modules/$pkg"
+  # Already available globally?
+  if node -e "require('$pkg')" 2>/dev/null; then
+    echo "  ✔ $pkg already available (global)"
+    return 0
   fi
+  # Already in project node_modules?
+  if [[ -d "$dest" ]]; then
+    echo "  ✔ $pkg already in node_modules"
+    return 0
+  fi
+  local _sandbox
+  _sandbox=$(mktemp -d "/tmp/atd-parser-install.XXXXXX")
+  echo "  Installing $pkg (sandboxed → node_modules)..."
+  (
+    cd "$_sandbox" &&
+    echo '{"private":true}' > package.json &&
+    timeout 30 npm install --ignore-scripts "$pkg" 2>&1
+  ) >> "${NPM_LOG:-/dev/null}" 2>&1
+
+  if [[ -d "$_sandbox/node_modules/$pkg" ]]; then
+    mkdir -p "$REPO_PATH/node_modules"
+    cp -r "$_sandbox/node_modules/$pkg" "$dest"
+    echo "  ✔ $pkg installed"
+  else
+    echo "  ⚠ WARNING: failed to install $pkg — some files may not be parsed"
+  fi
+  rm -rf "$_sandbox"
+}
+
+echo "== Step 1a: install parser packages (required by dependency-cruiser) =="
+_install_parser_sandboxed typescript
+
+# Framework-specific parsers
+if [[ -f "$REPO_PATH/svelte.config.js" || -f "$REPO_PATH/svelte.config.ts" ]]; then
+  _install_parser_sandboxed svelte
 fi
 
 if [[ -f "$REPO_PATH/vue.config.js" || -f "$REPO_PATH/nuxt.config.ts" || \
       -f "$REPO_PATH/nuxt.config.js" ]]; then
-  if [[ ! -d "$REPO_PATH/node_modules/vue" ]]; then
-    echo "  Installing vue parser..."
-    ( cd "$REPO_PATH" && \
-      timeout 30 npm install --no-save --ignore-scripts --legacy-peer-deps \
-        vue 2>&1 \
-    ) >> "${NPM_LOG:-/dev/null}" 2>&1 || true
-  fi
+  _install_parser_sandboxed vue
 fi
 
 # ---- Step 1b: SvelteKit sync (generate .svelte-kit/tsconfig.json) ----
@@ -366,7 +379,7 @@ if [[ "$MONOREPO_DETECTED" == "true" && -n "$WORKSPACE_DIRS" ]]; then
     DEPCRUISE_BIN="npx --no-install --package dependency-cruiser depcruise"
   fi
   # shellcheck disable=SC2086
-  ( cd "$REPO_PATH" && $DEPCRUISE_BIN "${DEPCRUISE_ARGS[@]}" $WORKSPACE_DIRS > "$DEPCRUISE_JSON" )
+  ( cd "$REPO_PATH" && NODE_PATH="$REPO_PATH/node_modules" $DEPCRUISE_BIN "${DEPCRUISE_ARGS[@]}" $WORKSPACE_DIRS > "$DEPCRUISE_JSON" )
 else
   # Single-package repo: scan the entry subdir only
   local_entry="$ENTRY_SUBDIR"
@@ -388,7 +401,7 @@ else
   if ! command -v depcruise >/dev/null 2>&1; then
     DEPCRUISE_BIN="npx --no-install --package dependency-cruiser depcruise"
   fi
-  ( cd "$REPO_PATH" && $DEPCRUISE_BIN "${DEPCRUISE_ARGS[@]}" "$local_entry" > "$DEPCRUISE_JSON" )
+  ( cd "$REPO_PATH" && NODE_PATH="$REPO_PATH/node_modules" $DEPCRUISE_BIN "${DEPCRUISE_ARGS[@]}" "$local_entry" > "$DEPCRUISE_JSON" )
 fi
 
 if declare -F timing_mark >/dev/null 2>&1; then timing_mark "end_depcruise"; fi

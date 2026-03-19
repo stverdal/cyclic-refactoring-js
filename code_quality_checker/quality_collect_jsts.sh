@@ -159,21 +159,28 @@ trap '_restore_npmrc' EXIT
 NPM_LOG="$OUT_ABS/npm_install.log"
 
 if ! declare -f QUALITY_INSTALL >/dev/null 2>&1; then
-  echo "  npm install (timeout ${NPM_INSTALL_TIMEOUT}s)..."
-  timeout "${NPM_INSTALL_TIMEOUT}" bash -c '
-    cd "$1" && npm install \
-      --ignore-scripts \
-      --engine-strict false \
-      --legacy-peer-deps \
-      --prefer-offline \
-      2>&1
-  ' _ "$WT_ROOT" > "$NPM_LOG" 2>&1 || echo "  ⚠ npm install exited with $? (timed out or failed — continuing)"
+  if [[ "$_PROJ_NPMRC_MOVED" == true ]]; then
+    echo "  ⚠ Project uses a private registry (.npmrc was present)."
+    echo "    Skipping full npm install (lockfile contains private URLs that cause hangs)."
+    echo "=== skipped: project .npmrc indicates private registry ===" > "$NPM_LOG"
+  else
+    echo "  npm install (timeout ${NPM_INSTALL_TIMEOUT}s)..."
+    timeout "${NPM_INSTALL_TIMEOUT}" bash -c '
+      cd "$1" && npm install \
+        --ignore-scripts \
+        --no-package-lock \
+        --engine-strict false \
+        --legacy-peer-deps \
+        --prefer-offline \
+        2>&1
+    ' _ "$WT_ROOT" > "$NPM_LOG" 2>&1 || echo "  ⚠ npm install exited with $? (timed out or failed — continuing)"
 
-  # Show which packages triggered auth errors
-  if grep -qi 'E401\|401 Unauthorized\|expired\|revoked' "$NPM_LOG" 2>/dev/null; then
-    echo "  ⚠ Auth errors detected. Packages that triggered E401:"
-    grep -i 'E401\|401 Unauthorized\|expired\|revoked' "$NPM_LOG" | head -10 | sed 's/^/    /'
-    echo "    Full log: $NPM_LOG"
+    # Show which packages triggered auth errors
+    if grep -qi 'E401\|401 Unauthorized\|expired\|revoked' "$NPM_LOG" 2>/dev/null; then
+      echo "  ⚠ Auth errors detected. Packages that triggered E401:"
+      grep -i 'E401\|401 Unauthorized\|expired\|revoked' "$NPM_LOG" | head -10 | sed 's/^/    /'
+      echo "    Full log: $NPM_LOG"
+    fi
   fi
 else
   echo "Using custom QUALITY_INSTALL for $REPO_NAME"
