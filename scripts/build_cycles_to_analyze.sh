@@ -23,15 +23,17 @@ OUT_PATH="cycles_to_analyze.txt"
 MIN_SIZE=""
 MAX_SIZE=""
 STRATEGY=""
+EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --total) TOTAL="$2"; shift 2 ;;
-    --out) OUT_PATH="$2"; shift 2 ;;
+    --total)    TOTAL="$2";    shift 2 ;;
+    --out)      OUT_PATH="$2"; shift 2 ;;
     --min-size) MIN_SIZE="$2"; shift 2 ;;
     --max-size) MAX_SIZE="$2"; shift 2 ;;
     --strategy) STRATEGY="$2"; shift 2 ;;
-    *) echo "Unknown arg: $1" >&2; exit 2 ;;
+    --*)        EXTRA_ARGS+=("$1" "$2"); shift 2 ;;
+    *)          echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
