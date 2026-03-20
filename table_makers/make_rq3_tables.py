@@ -31,10 +31,16 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from rq_utils import (
     read_json, read_repos_file, get_tests_pass_percent, get_scc_metrics,
-    ATD_METRICS, CQ_METRICS, parse_cycles, branch_for, cycle_size_from_baseline,
+    ATD_METRICS, CQ_METRICS, ATD_METRICS_FALLBACK, CQ_METRICS_FALLBACK,
+    parse_cycles, branch_for, cycle_size_from_baseline,
     safe_sub, mcnemar_p, map_roots_exps, exp_family, mcnemar_p_one_sided,
-    parse_bins_arg, size_to_bin
+    parse_bins_arg, size_to_bin, load_json_any
 )
+
+# ATD_METRICS is already "ATD_identification/ATD_metrics.json", so no extra prefix needed.
+_ATD_CANDIDATES = [ATD_METRICS, "ATD_metrics.json",
+                   ATD_METRICS_FALLBACK, "scc_report.json"]
+_CQ_CANDIDATES  = [CQ_METRICS, CQ_METRICS_FALLBACK]
 
 # ---------- main ----------
 def main():
@@ -65,10 +71,10 @@ def main():
                 continue
 
             repo_dir = results_root / repo
-            base_dir = repo_dir / base_branch
+            base_dir = repo_dir / "branches" / base_branch
 
-            base_atd = read_json(base_dir / ATD_METRICS)
-            base_qual = read_json(base_dir / CQ_METRICS)
+            base_atd = load_json_any(base_dir, _ATD_CANDIDATES)
+            base_qual = load_json_any(base_dir, _CQ_CANDIDATES)
             if base_atd is None or base_qual is None:
                 print(f"[WARN] Missing baseline ATD or quality metrics for {repo}@{base_branch} under {results_root}", file=sys.stderr)
                 continue
@@ -103,8 +109,8 @@ def main():
                         post_loc   = pre_loc
                         tests_pass = base_tests
                     else:
-                        post_qual = read_json(new_dir / CQ_METRICS)
-                        post_atd  = read_json(new_dir / ATD_METRICS)
+                        post_qual = load_json_any(new_dir, _CQ_CANDIDATES)
+                        post_atd  = load_json_any(new_dir, _ATD_CANDIDATES)
                         if post_atd is None:
                             continue
                         post = get_scc_metrics(post_atd)

@@ -8,8 +8,11 @@ from scipy.stats import binomtest
 # ---------- constants ----------
 ATD_DIR = "ATD_identification"
 ATD_METRICS = f"{ATD_DIR}/ATD_metrics.json"
+ATD_METRICS_FALLBACK = f"{ATD_DIR}/scc_report.json"
 ATD_MODULE_CYCLES = f"{ATD_DIR}/module_cycles.json"
+ATD_MODULE_CYCLES_FALLBACK = f"{ATD_DIR}/cycle_catalog.json"
 CQ_METRICS = "code_quality_checks/metrics.json"
+CQ_METRICS_FALLBACK = "code_quality_checks.json"
 
 # ---------- basic IO ----------
 def read_json(p: Path) -> Optional[Dict[str, Any]]:
@@ -42,7 +45,7 @@ def sanitize(s: str) -> str:
     return s
 
 def branch_for(exp_label: str, cycle_id: str) -> str:
-    return sanitize(f"cycle-fix-{exp_label}-{cycle_id}")
+    return "branches/" + sanitize(f"atd-{exp_label}-{cycle_id}")
 
 def parse_cycles(cycles_file: Path) -> Dict[Tuple[str, str], List[str]]:
     out: Dict[Tuple[str, str], List[str]] = {}
@@ -83,7 +86,11 @@ def safe_sub(a: Optional[float], b: Optional[float]) -> Optional[float]:
 def cycle_size_from_baseline(base_repo_branch_dir: Path, cycle_id: str) -> Optional[int]:
     mod = read_json(base_repo_branch_dir / ATD_MODULE_CYCLES)
     if not mod:
+        mod = read_json(base_repo_branch_dir / ATD_MODULE_CYCLES_FALLBACK)
+    if not mod:
         return None
+    # Support both module_cycles.json (sccs[].representative_cycles[])
+    # and cycle_catalog.json (cycles[] flat list)
     for scc in mod.get("sccs", []):
         for cyc in scc.get("representative_cycles", []):
             if str(cyc.get("id")) == str(cycle_id):
@@ -91,6 +98,14 @@ def cycle_size_from_baseline(base_repo_branch_dir: Path, cycle_id: str) -> Optio
                     return int(cyc["length"])
                 nodes = cyc.get("nodes") or []
                 return int(len(nodes))
+    # cycle_catalog.json stores cycles as a flat list
+    for cyc in mod.get("cycles", []):
+        cid = cyc.get("id") or cyc.get("cycle_id")
+        if str(cid) == str(cycle_id):
+            if "length" in cyc and isinstance(cyc["length"], int):
+                return int(cyc["length"])
+            nodes = cyc.get("nodes") or cyc.get("modules") or []
+            return int(len(nodes))
     return None
 
 # ---------- metrics parsing ----------
@@ -113,6 +128,9 @@ def get_scc_metrics(atd: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 "total_nodes_in_cyclic_sccs": None, "total_edges_in_cyclic_sccs": None,
                 "total_loc_in_cyclic_sccs": None, "cycle_pressure_lb": None,
                 "avg_density_directed": None, "avg_edge_surplus_lb": None}
+    # scc_report.json stores top-level metrics under "global_metrics";
+    # ATD_metrics.json (if it exists) stores them at the top level.
+    gm = atd.get("global_metrics") or atd
     sccs = atd.get("sccs") or []
     avg_density = None
     avg_surplus = None
@@ -124,13 +142,13 @@ def get_scc_metrics(atd: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if surp:
             avg_surplus = round(sum(surp) / len(surp), 2)
     return {
-        "scc_count": atd.get("scc_count"),
-        "max_scc_size": atd.get("max_scc_size"),
-        "avg_scc_size": atd.get("avg_scc_size"),
-        "total_nodes_in_cyclic_sccs": atd.get("total_nodes_in_cyclic_sccs"),
-        "total_edges_in_cyclic_sccs": atd.get("total_edges_in_cyclic_sccs"),
-        "total_loc_in_cyclic_sccs": atd.get("total_loc_in_cyclic_sccs"),
-        "cycle_pressure_lb": atd.get("cycle_pressure_lb"),
+        "scc_count": gm.get("scc_count"),
+        "max_scc_size": gm.get("max_scc_size"),
+        "avg_scc_size": gm.get("avg_scc_size"),
+        "total_nodes_in_cyclic_sccs": gm.get("total_nodes_in_cyclic_sccs"),
+        "total_edges_in_cyclic_sccs": gm.get("total_edges_in_cyclic_sccs"),
+        "total_loc_in_cyclic_sccs": gm.get("total_loc_in_cyclic_sccs"),
+        "cycle_pressure_lb": gm.get("cycle_pressure_lb"),
         "avg_density_directed": avg_density,
         "avg_edge_surplus_lb": avg_surplus,
     }

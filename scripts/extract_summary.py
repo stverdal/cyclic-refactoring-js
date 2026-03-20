@@ -13,19 +13,23 @@ Usage (from host/WSL or inside Docker):
         --repos-file repos.txt --cycles-file cycles_to_analyze.txt \
         --outdir analysis_out
 
-    # Step 2: print the summary
+    # Step 2: print summary for ALL projects
     python3 scripts/extract_summary.py --outdir analysis_out
 
-    # Optionally include diff statistics (patch file summaries):
-    python3 scripts/extract_summary.py --outdir analysis_out \
-        --results-roots results --exp-ids expA \
-        --repos-file repos.txt --cycles-file cycles_to_analyze.txt
+    # Step 2 (alt): print summary for ONE project only
+    python3 scripts/extract_summary.py --outdir analysis_out --repo kombu
 
-    # Show the N most interesting diffs (by lines changed):
+    # Include diff statistics (patch file summaries):
     python3 scripts/extract_summary.py --outdir analysis_out \
         --results-roots results --exp-ids expA \
         --repos-file repos.txt --cycles-file cycles_to_analyze.txt \
         --top-diffs 5
+
+    # Per-project with diffs:
+    python3 scripts/extract_summary.py --outdir analysis_out \
+        --results-roots results --exp-ids expA \
+        --repos-file repos.txt --cycles-file cycles_to_analyze.txt \
+        --repo kombu --top-diffs 3
 
     # Widen output for larger monitors:
     python3 scripts/extract_summary.py --outdir analysis_out --width 120
@@ -44,14 +48,42 @@ from typing import Any, Dict, List, Optional, Tuple
 # ─── constants ───────────────────────────────────────────────────────────────
 SEPARATOR_CHAR = "═"
 THIN_SEP_CHAR = "─"
+WARN_PREFIX = "  ⚠ "
+ERR_PREFIX  = "  ✖ "
+OK_PREFIX   = "  ✔ "
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
-def load_csv(path: Path) -> List[Dict[str, str]]:
+def load_csv(path: Path, label: str = "") -> List[Dict[str, str]]:
+    name = label or path.name
     if not path.exists():
+        print(f"{WARN_PREFIX}{name} not found at: {path}")
+        print(f"         → Did you run run_make_rq_tables.sh first?")
         return []
-    with path.open("r", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except Exception as e:
+        print(f"{ERR_PREFIX}Failed to read {name}: {e}")
+        return []
+    if not rows:
+        print(f"{WARN_PREFIX}{name} exists but is empty (0 data rows)")
+        print(f"         → The analysis may have found no matching data.")
+    return rows
+
+
+def filter_csv_by_repo(
+    rows: List[Dict[str, str]], repo: Optional[str]
+) -> List[Dict[str, str]]:
+    """Filter CSV rows to a specific repo (if given)."""
+    if repo is None:
+        return rows
+    filtered = [r for r in rows if r.get("repo", "").strip() == repo]
+    if rows and not filtered:
+        available = sorted({r.get("repo", "").strip() for r in rows if r.get("repo")})
+        print(f"{WARN_PREFIX}No rows match --repo '{repo}'")
+        print(f"         → Available repos in CSV: {', '.join(available[:15])}")
+    return filtered
 
 
 def fv(val: Optional[str], decimals: int = 2) -> str:
@@ -105,6 +137,130 @@ def row_get(rows: List[Dict[str, str]], key: str, value: str) -> Optional[Dict[s
     return None
 
 
+# ─── preflight health check ──────────────────────────────────────────────────
+def run_preflight(
+    outdir: Path,
+    results_roots: Optional[List[str]],
+    exp_ids: Optional[List[str]],
+    repos_file: Optional[str],
+    cycles_file: Optional[str],
+    repo_filter: Optional[str],
+    width: int,
+) -> None:
+    """Check that expected files exist and report problems clearly."""
+    print(hline(width))
+    print(centered("PREFLIGHT CHECK", width))
+    print(hline(width))
+    print()
+    issues = 0
+
+    # 1. Check outdir exists
+    if not outdir.exists():
+        print(f"{ERR_PREFIX}Output directory does not exist: {outdir}")
+        print(f"         → Run run_make_rq_tables.sh first to generate the CSVs.")
+        issues += 1
+    else:
+        print(f"{OK_PREFIX}Output directory exists: {outdir}")
+
+        # 2. Check individual CSV files
+        expected_csvs = [
+            ("rq1_with_vs_without.csv", "RQ1 pooled results"),
+            ("rq1_per_project.csv",     "RQ1 per-project breakdown"),
+            ("rq1_per_cycle.csv",       "RQ1 per-cycle detail (needed by RQ2)"),
+            ("rq2_overall.csv",         "RQ2 code quality deltas"),
+            ("rq3_by_cycle_bin.csv",    "RQ3 scalability by cycle size"),
+        ]
+        for fname, desc in expected_csvs:
+            p = outdir / fname
+            if p.exists():
+                try:
+                    with p.open("r", encoding="utf-8") as f:
+                        n_rows = sum(1 for _ in csv.reader(f)) - 1  # minus header
+                    if n_rows > 0:
+                        print(f"{OK_PREFIX}{fname} — {n_rows} rows ({desc})")
+                    else:
+                        print(f"{WARN_PREFIX}{fname} — exists but EMPTY ({desc})")
+                        print(f"         → The table maker ran but found no matching data.")
+                        print(f"         → Check that the experiment finished and results are in the expected location.")
+                        issues += 1
+                except Exception as e:
+                    print(f"{ERR_PREFIX}{fname} — cannot read: {e}")
+                    issues += 1
+            else:
+                print(f"{WARN_PREFIX}{fname} — MISSING ({desc})")
+                if fname == "rq2_overall.csv":
+                    print(f"         → RQ2 requires rq1_per_cycle.csv to exist. Run make_rq1_tables.py first.")
+                elif fname == "rq3_by_cycle_bin.csv":
+                    print(f"         → Run make_rq3_tables.py or run_make_rq_tables.sh.")
+                else:
+                    print(f"         → Run run_make_rq_tables.sh to generate this file.")
+                issues += 1
+
+    # 3. Check results directory and input files (if diff analysis requested)
+    if results_roots:
+        for rr in results_roots:
+            rp = Path(rr)
+            if rp.exists():
+                # Count repos with branches/
+                repo_dirs = [d for d in rp.iterdir() if d.is_dir() and (d / "branches").is_dir()]
+                print(f"{OK_PREFIX}Results root '{rr}' — {len(repo_dirs)} repos with branches/")
+                if repo_filter:
+                    match = [d for d in repo_dirs if d.name == repo_filter]
+                    if match:
+                        # Count branch dirs for this repo
+                        branches = list((match[0] / "branches").iterdir())
+                        n_cycle = len([b for b in branches if b.name.startswith("cycle-fix-")])
+                        print(f"{OK_PREFIX}  Repo '{repo_filter}' found — {n_cycle} refactoring branch(es)")
+                    else:
+                        print(f"{WARN_PREFIX}  Repo '{repo_filter}' NOT FOUND in {rr}")
+                        avail = sorted(d.name for d in repo_dirs)[:15]
+                        print(f"         → Available repos: {', '.join(avail)}")
+                        issues += 1
+            else:
+                print(f"{ERR_PREFIX}Results root does not exist: {rr}")
+                issues += 1
+
+    if repos_file:
+        rp = Path(repos_file)
+        if rp.exists():
+            print(f"{OK_PREFIX}repos file: {repos_file}")
+        else:
+            print(f"{ERR_PREFIX}repos file not found: {repos_file}")
+            issues += 1
+
+    if cycles_file:
+        cp = Path(cycles_file)
+        if cp.exists():
+            lines = [l.strip() for l in cp.read_text(encoding="utf-8").splitlines()
+                     if l.strip() and not l.strip().startswith("#")]
+            if repo_filter:
+                matching = [l for l in lines if l.split()[0] == repo_filter]
+                print(f"{OK_PREFIX}cycles file: {len(matching)} cycles for '{repo_filter}' (of {len(lines)} total)")
+                if not matching:
+                    print(f"{WARN_PREFIX}  No cycles found for repo '{repo_filter}' in {cycles_file}")
+                    issues += 1
+            else:
+                print(f"{OK_PREFIX}cycles file: {len(lines)} total cycles")
+        else:
+            print(f"{ERR_PREFIX}cycles file not found: {cycles_file}")
+            issues += 1
+
+    # 4. Repo filter note
+    if repo_filter:
+        print(f"\n  Filtering: --repo '{repo_filter}' (single-project mode)")
+    else:
+        print(f"\n  Showing: ALL projects (use --repo <name> to filter to one project)")
+
+    # Summary
+    print()
+    if issues == 0:
+        print(f"{OK_PREFIX}All checks passed. Proceeding with summary.")
+    else:
+        print(f"{WARN_PREFIX}{issues} issue(s) detected. Output may be incomplete or empty.")
+        print(f"         → Fix the issues above, then re-run.")
+    print()
+
+
 # ─── diff statistics ─────────────────────────────────────────────────────────
 def parse_diffstat(patch_path: Path) -> Optional[Dict[str, Any]]:
     """Parse a unified diff patch and return summary statistics."""
@@ -149,8 +305,9 @@ def collect_diff_stats(
     exp_ids: List[str],
     repos_file: Path,
     cycles_file: Path,
+    repo_filter: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Collect diff statistics for all experiment units."""
+    """Collect diff statistics for all (or one) experiment units."""
     # Import branch_for from rq_utils (add table_makers to path)
     script_dir = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(script_dir / "table_makers"))
@@ -161,14 +318,32 @@ def collect_diff_stats(
     cycles_map = parse_cycles(cycles_file)
 
     stats: List[Dict[str, Any]] = []
+    missing_patches: List[str] = []
+    missing_branches: List[str] = []
 
     for results_root, with_id, wo_id in cfgs:
         root = Path(results_root)
         for repo, baseline_branch, _src in repos:
+            if repo_filter and repo != repo_filter:
+                continue
             cids = cycles_map.get((repo, baseline_branch), [])
+            if not cids:
+                if repo_filter:
+                    print(f"{WARN_PREFIX}No cycles found for repo '{repo}' (branch '{baseline_branch}') in cycles file")
+                continue
             for cid in cids:
                 for cond_label, exp_label in [("with", with_id), ("without", wo_id)]:
                     branch = branch_for(exp_label, cid)
+                    # Check if the branch directory exists at all
+                    branch_dir_candidates = [
+                        root / repo / "branches" / branch,
+                        root / repo / branch,
+                    ]
+                    branch_exists = any(d.is_dir() for d in branch_dir_candidates)
+                    if not branch_exists:
+                        missing_branches.append(f"{repo}/{branch} ({cond_label})")
+                        continue
+
                     # Try pipeline layout (branches/) first, then flat layout
                     candidates = [
                         root / repo / "branches" / branch / "openhands" / "git_diff.patch",
@@ -187,30 +362,104 @@ def collect_diff_stats(
                         ds["condition"] = cond_label
                         ds["branch"] = branch
                         stats.append(ds)
+                    else:
+                        missing_patches.append(f"{repo}/{branch} ({cond_label})")
+
+    # Report missing data
+    if missing_branches:
+        print(f"\n{WARN_PREFIX}{len(missing_branches)} branch dir(s) not found (runs may not have completed):")
+        for mb in missing_branches[:10]:
+            print(f"         → {mb}")
+        if len(missing_branches) > 10:
+            print(f"         → ... and {len(missing_branches) - 10} more")
+
+    if missing_patches:
+        print(f"\n{WARN_PREFIX}{len(missing_patches)} branch(es) exist but no patch file found:")
+        print(f"         → These runs may have failed before producing any code changes.")
+        for mp in missing_patches[:10]:
+            print(f"         → {mp}")
+        if len(missing_patches) > 10:
+            print(f"         → ... and {len(missing_patches) - 10} more")
+
+    if not stats and (missing_branches or missing_patches):
+        total = len(missing_branches) + len(missing_patches)
+        print(f"\n{ERR_PREFIX}No diff data collected. All {total} expected patch(es) are missing.")
+        print(f"         → Possible causes:")
+        print(f"           1. The experiment has not been run yet (run scripts/run_llm.sh first)")
+        print(f"           2. The results directory path is wrong (check --results-roots)")
+        print(f"           3. All OpenHands runs failed or timed out without producing patches")
+        if repo_filter:
+            print(f"           4. The repo name '{repo_filter}' doesn't match entries in repos.txt")
 
     return stats
 
 
 # ─── printers ────────────────────────────────────────────────────────────────
-def print_rq1(outdir: Path, width: int) -> None:
-    wv = load_csv(outdir / "rq1_with_vs_without.csv")
-    pp = load_csv(outdir / "rq1_per_project.csv")
+def print_rq1(outdir: Path, width: int, repo_filter: Optional[str] = None) -> None:
+    wv = load_csv(outdir / "rq1_with_vs_without.csv", "rq1_with_vs_without.csv")
+    pp = load_csv(outdir / "rq1_per_project.csv", "rq1_per_project.csv")
+    pc = load_csv(outdir / "rq1_per_cycle.csv", "rq1_per_cycle.csv")
 
-    if not wv:
-        print("  [No RQ1 data found]\n")
+    # If filtering by repo, we use per-cycle and per-project data instead of pooled
+    pp = filter_csv_by_repo(pp, repo_filter)
+    pc = filter_csv_by_repo(pc, repo_filter)
+
+    if not wv and not pp and not pc:
+        print(f"{ERR_PREFIX}No RQ1 data found at all.")
+        print(f"         → Run run_make_rq_tables.sh before running this script.")
+        print()
         return
 
     r_with = row_get(wv, "Condition", "with")
     r_wo = row_get(wv, "Condition", "without")
     r_stats = row_get(wv, "Condition", "stats")
 
+    title_suffix = f"  [{repo_filter}]" if repo_filter else ""
     print(hline(width))
-    print(centered("RQ1: Structural Improvement  (WITH vs WITHOUT explanation)", width))
+    print(centered(f"RQ1: Structural Improvement{title_suffix}", width))
     print(hline(width))
     print()
 
-    # ── Pooled summary ──
-    if r_with and r_wo:
+    # ── Per-project summary (when filtering by repo) ──
+    if repo_filter and pc:
+        for cond in ("with", "without"):
+            cond_rows = [r for r in pc if r.get("Condition", "").strip() == cond]
+            n_total = len(cond_rows)
+            n_success = sum(1 for r in cond_rows if r.get("Success", "").strip() in ("1", "True", "true"))
+            succ_pct = (100.0 * n_success / n_total) if n_total else 0
+            print(f"  {cond.upper()} explanation:  {n_success}/{n_total} success ({succ_pct:.1f}%)")
+
+            # Delta metrics for successful runs
+            succ_rows = [r for r in cond_rows if r.get("Success", "").strip() in ("1", "True", "true")]
+            for metric, key in [("ΔEdges", "ΔEdges"), ("ΔNodes", "ΔNodes"), ("ΔLOC", "ΔLOC")]:
+                vals = []
+                for r in succ_rows:
+                    try:
+                        vals.append(float(r[key]))
+                    except (KeyError, ValueError, TypeError):
+                        pass
+                if vals:
+                    m = sum(vals) / len(vals)
+                    s = (sum((v - m) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5 if len(vals) > 1 else 0
+                    print(f"    {metric}: mean={m:.2f}  std={s:.2f}  (n={len(vals)})")
+        print()
+
+        # Per-cycle detail table for this repo
+        print(f"  Per-Cycle Detail ({repo_filter}):")
+        print(f"    {'Cycle ID':20s} {'Cond':7s} {'Success':>7s} {'ΔEdge':>7s} {'ΔNode':>7s} {'ΔLOC':>7s}")
+        print(f"    {THIN_SEP_CHAR * 60}")
+        for r in sorted(pc, key=lambda x: (x.get("cycle_id", ""), x.get("Condition", ""))):
+            cid = (r.get("cycle_id") or "")[:19]
+            cond = (r.get("Condition") or "")[:6]
+            succ = "YES" if r.get("Success", "").strip() in ("1", "True", "true") else "no"
+            de = fv(r.get("ΔEdges"))
+            dn = fv(r.get("ΔNodes"))
+            dl = fv(r.get("ΔLOC"))
+            print(f"    {cid:20s} {cond:7s} {succ:>7s} {de:>7s} {dn:>7s} {dl:>7s}")
+        print()
+
+    # ── Pooled summary (all projects) ──
+    if r_with and r_wo and not repo_filter:
         print("  Pooled Results:")
         print(f"    {'':30s}  {'WITH':>12s}  {'WITHOUT':>12s}")
         print(f"    {THIN_SEP_CHAR * 58}")
@@ -259,8 +508,8 @@ def print_rq1(outdir: Path, width: int) -> None:
             vo = fv(r_wo.get(key), 1)
             print(f"    {label:30s}  {vw:>11s}%  {vo:>11s}%")
 
-    # ── Statistical tests ──
-    if r_stats:
+    # ── Statistical tests (all-projects mode only) ──
+    if r_stats and not repo_filter:
         print()
         print("  Statistical Tests:")
         print(f"    McNemar (two-sided)  p = {sig(r_stats.get('Success_p_McNemar_two_sided'))}")
@@ -277,8 +526,8 @@ def print_rq1(outdir: Path, width: int) -> None:
               f"  Both-success: {fv(r_stats.get('both_success'),0)}"
               f"  Both-fail: {fv(r_stats.get('both_fail'),0)}")
 
-    # ── Per-project table ──
-    if pp:
+    # ── Per-project table (all-projects mode) ──
+    if pp and not repo_filter:
         print()
         print("  Per-Project Breakdown:")
         print(f"    {'Repo':25s} {'Cond':8s} {'n':>4s} {'Succ':>5s} {'S%':>7s}"
@@ -299,17 +548,29 @@ def print_rq1(outdir: Path, width: int) -> None:
     print()
 
 
-def print_rq2(outdir: Path, width: int) -> None:
-    overall = load_csv(outdir / "rq2_overall.csv")
+def print_rq2(outdir: Path, width: int, repo_filter: Optional[str] = None) -> None:
+    overall = load_csv(outdir / "rq2_overall.csv", "rq2_overall.csv")
 
     if not overall:
-        print("  [No RQ2 data found]\n")
+        print(f"{WARN_PREFIX}No RQ2 data found. Possible causes:")
+        print(f"         → run_make_rq_tables.sh was not run, or")
+        print(f"         → No refactorings were successful (RQ2 only covers successful runs), or")
+        print(f"         → rq1_per_cycle.csv was not generated first (RQ2 depends on RQ1).")
+        print()
         return
 
+    title_suffix = f"  [{repo_filter}]" if repo_filter else ""
     print(hline(width))
-    print(centered("RQ2: Code Quality Deltas  (successful refactorings only)", width))
+    print(centered(f"RQ2: Code Quality Deltas{title_suffix}", width))
     print(hline(width))
     print()
+
+    # Note: rq2_overall.csv contains pooled results, not per-repo.
+    # When filtering by repo, we note this limitation.
+    if repo_filter:
+        print(f"{WARN_PREFIX}RQ2 CSV is pooled across all projects; per-repo filtering is not available.")
+        print(f"         → Showing overall quality deltas for context.")
+        print()
 
     r_with = row_get(overall, "Condition", "with")
     r_wo = row_get(overall, "Condition", "without")
@@ -350,17 +611,25 @@ def print_rq2(outdir: Path, width: int) -> None:
     print()
 
 
-def print_rq3(outdir: Path, width: int) -> None:
-    rows = load_csv(outdir / "rq3_by_cycle_bin.csv")
+def print_rq3(outdir: Path, width: int, repo_filter: Optional[str] = None) -> None:
+    rows = load_csv(outdir / "rq3_by_cycle_bin.csv", "rq3_by_cycle_bin.csv")
 
     if not rows:
-        print("  [No RQ3 data found]\n")
+        print(f"{WARN_PREFIX}No RQ3 data found.")
+        print(f"         → Run make_rq3_tables.py or run_make_rq_tables.sh.")
+        print()
         return
 
+    title_suffix = f"  [{repo_filter}]" if repo_filter else ""
     print(hline(width))
-    print(centered("RQ3: Scalability by Cycle Size", width))
+    print(centered(f"RQ3: Scalability by Cycle Size{title_suffix}", width))
     print(hline(width))
     print()
+
+    if repo_filter:
+        print(f"{WARN_PREFIX}RQ3 CSV is pooled across all projects; per-repo filtering is not available.")
+        print(f"         → Showing overall cycle-size breakdown for context.")
+        print()
 
     # Bin rows (not the interaction row)
     bin_rows = [r for r in rows if r.get("CycleBin") != "Interaction"]
@@ -579,12 +848,29 @@ def print_diff_examples(
 # ─── main ────────────────────────────────────────────────────────────────────
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Print a screenshot-friendly summary of experiment results."
+        description="Print a screenshot-friendly summary of experiment results.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+examples:
+  # All projects:
+  python3 scripts/extract_summary.py --outdir analysis_out
+
+  # Single project:
+  python3 scripts/extract_summary.py --outdir analysis_out --repo kombu
+
+  # Single project with diffs:
+  python3 scripts/extract_summary.py --outdir analysis_out \\
+      --results-roots results --exp-ids expA \\
+      --repos-file repos.txt --cycles-file cycles_to_analyze.txt \\
+      --repo kombu --top-diffs 3
+""",
     )
     ap.add_argument("--outdir", required=True,
                     help="Directory containing rq1/rq2/rq3 CSVs (from run_make_rq_tables.sh)")
     ap.add_argument("--width", type=int, default=100,
                     help="Terminal width for formatting (default: 100)")
+    ap.add_argument("--repo", default=None, dest="repo_filter",
+                    help="Filter to a single repo/project (must match name in repos.txt)")
 
     # Optional: diff analysis (requires knowing the results layout)
     ap.add_argument("--results-roots", nargs="+", default=None,
@@ -601,22 +887,38 @@ def main() -> None:
     args = ap.parse_args()
     W = args.width
     outdir = Path(args.outdir)
+    repo_filter: Optional[str] = args.repo_filter
 
     print()
+
+    # ── Preflight check ──
+    run_preflight(
+        outdir=outdir,
+        results_roots=args.results_roots,
+        exp_ids=args.exp_ids,
+        repos_file=args.repos_file,
+        cycles_file=args.cycles_file,
+        repo_filter=repo_filter,
+        width=W,
+    )
+
+    title = "EXPERIMENT RESULTS SUMMARY"
+    if repo_filter:
+        title = f"RESULTS SUMMARY: {repo_filter}"
     print(hline(W))
-    print(centered("EXPERIMENT RESULTS SUMMARY", W))
+    print(centered(title, W))
     print(centered("(screenshot this output)", W))
     print(hline(W))
     print()
 
     # RQ1
-    print_rq1(outdir, W)
+    print_rq1(outdir, W, repo_filter)
 
     # RQ2
-    print_rq2(outdir, W)
+    print_rq2(outdir, W, repo_filter)
 
     # RQ3
-    print_rq3(outdir, W)
+    print_rq3(outdir, W, repo_filter)
 
     # Diff statistics (optional)
     has_diff_args = (
@@ -631,6 +933,7 @@ def main() -> None:
             args.exp_ids,
             Path(args.repos_file),
             Path(args.cycles_file),
+            repo_filter=repo_filter,
         )
         print_diff_stats(diff_stats, args.top_diffs, W)
         print_diff_examples(

@@ -22,9 +22,12 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple
 
 from rq_utils import (
-    read_json, read_repos_file, CQ_METRICS, extract_quality_metrics,
-    parse_cycles, branch_for, map_roots_exps, mean_std
+    read_json, read_repos_file, CQ_METRICS, CQ_METRICS_FALLBACK,
+    extract_quality_metrics,
+    parse_cycles, branch_for, map_roots_exps, mean_std, load_json_any
 )
+
+_CQ_CANDIDATES = [CQ_METRICS, CQ_METRICS_FALLBACK]
 
 # -------------- metrics --------------
 METRICS = [
@@ -85,7 +88,8 @@ def main():
         for repo, baseline_branch, _src_rel in repos_list:
             repo_dir = root / repo
 
-            base = read_json(repo_dir / baseline_branch / CQ_METRICS)
+            baseline_dir = repo_dir / "branches" / baseline_branch
+            base = load_json_any(baseline_dir, _CQ_CANDIDATES)
             if base:
                 trace_rows.append({
                     "repo": repo, "results_root": str(root),
@@ -100,7 +104,7 @@ def main():
                     if use_base and base:
                         j = base
                     else:
-                        j = read_json(branch_dir / CQ_METRICS)
+                        j = load_json_any(branch_dir, _CQ_CANDIDATES)
                     if j:
                         trace_rows.append({
                             "repo": repo, "results_root": str(root),

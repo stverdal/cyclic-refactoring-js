@@ -33,8 +33,10 @@ from rq_utils import (
     mcnemar_p, map_roots_exps, exp_family, mcnemar_p_one_sided
 )
 
-ATD_METRICS = ["ATD_identification/ATD_metrics.json", "ATD_metrics.json"]
-QUALITY_METRICS = ["code_quality_checks/metrics.json", "metrics.json"]
+ATD_METRICS = ["ATD_identification/ATD_metrics.json", "ATD_metrics.json",
+               "ATD_identification/scc_report.json", "scc_report.json"]
+QUALITY_METRICS = ["code_quality_checks/metrics.json", "metrics.json",
+                   "code_quality_checks.json"]
 
 # ----------------- helpers -----------------
 def median_or_none(vals: List[Optional[float]]) -> Optional[float]:
@@ -149,7 +151,7 @@ def main():
     for results_root, WITH_ID, WO_ID in cfgs:
         for repo, baseline_branch, _src_rel in repos:
             repo_dir = Path(results_root) / repo
-            baseline_dir = repo_dir / baseline_branch
+            baseline_dir = repo_dir / "branches" / baseline_branch
 
             base_atd   = load_json_any(baseline_dir, ATD_METRICS)
             base_qual  = load_json_any(baseline_dir, QUALITY_METRICS)
