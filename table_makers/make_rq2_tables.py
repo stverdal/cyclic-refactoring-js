@@ -97,7 +97,10 @@ def main():
                 })
 
             for cid in cycles_map.get((repo, baseline_branch), []):
-                for variant_label, exp_label in (("with", with_id), ("without", wo_id)):
+                variants = [("with", with_id)]
+                if wo_id is not None:
+                    variants.append(("without", wo_id))
+                for variant_label, exp_label in variants:
                     branch = branch_for(exp_label, cid)
                     branch_dir = repo_dir / branch
                     use_base = (branch_dir / ".copied_metrics_marker").exists()

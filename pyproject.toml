@@ -6,10 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "bandit>=1.8.6",
+    "lizard>=1.21.2",
     "mypy>=1.18.2",
     "networkx>=3.5",
     "numpy>=2.3.4",
-    "openhands>=1.0.1",
+    "openhands==1.12.2",
     "pip-audit>=2.9.0",
     "pydeps>=3.0.1",
     "pytest>=8.4.2",
@@ -19,6 +20,7 @@ dependencies = [
     "requests>=2.32.5",
     "ruff>=0.14.0",
     "scipy>=1.16.2",
+    "statsmodels>=0.14.6",
     "tox-uv>=1.29.0",
     "typer>=0.19.2",
     "vulture>=2.14",

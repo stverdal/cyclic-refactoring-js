@@ -79,10 +79,18 @@ class LLMConfig:
 
 @dataclass(frozen=True)
 class OpenHandsConfig:
-    image: str
     runtime_image: str
     max_iters: int
     commit_message: str
+
+
+@dataclass(frozen=True)
+class ATDIdentificationConfig:
+    exclude_dirs: List[str]
+    exclude_patterns: List[str]
+    strategy: str           # "balanced" | "importance" | "bin"
+    size_bins: str           # e.g. "2-3,4-5,6-8" (required when strategy=bin)
+    max_per_repo: int        # node-use cap per repo (0 = unlimited)
 
 
 @dataclass(frozen=True)
@@ -96,6 +104,7 @@ class PipelineConfig:
     policy: PolicyConfig
     llm: LLMConfig
     openhands: OpenHandsConfig
+    atd_identification: ATDIdentificationConfig
 
     modes: List[ModeSpec]
 
@@ -136,10 +145,32 @@ class PipelineConfig:
         if not isinstance(oh_raw, dict):
             _die("Missing required config field: openhands (mapping)")
         openhands = OpenHandsConfig(
-            image=_need_str(oh_raw, "image", "openhands"),
             runtime_image=_need_str(oh_raw, "runtime_image", "openhands"),
             max_iters=_need_int(oh_raw, "max_iters", "openhands"),
             commit_message=_need_str(oh_raw, "commit_message", "openhands"),
+        )
+
+        # atd_identification (optional section)
+        atd_raw = raw.get("atd_identification") or {}
+        if not isinstance(atd_raw, dict):
+            atd_raw = {}
+        _exclude_dirs = atd_raw.get("exclude_dirs") or []
+        if not isinstance(_exclude_dirs, list):
+            _exclude_dirs = [str(_exclude_dirs)]
+        _exclude_patterns = atd_raw.get("exclude_patterns") or []
+        if not isinstance(_exclude_patterns, list):
+            _exclude_patterns = [str(_exclude_patterns)]
+        _atd_strategy = str(atd_raw.get("strategy") or "balanced").strip()
+        if _atd_strategy not in {"balanced", "importance", "bin"}:
+            _die(f"atd_identification.strategy must be balanced|importance|bin (got {_atd_strategy!r})")
+        _size_bins = str(atd_raw.get("size_bins") or "").strip()
+        _max_per_repo = int(atd_raw.get("max_per_repo") or 0)
+        atd_identification = ATDIdentificationConfig(
+            exclude_dirs=[str(d).strip() for d in _exclude_dirs],
+            exclude_patterns=[str(p).strip() for p in _exclude_patterns],
+            strategy=_atd_strategy,
+            size_bins=_size_bins,
+            max_per_repo=_max_per_repo,
         )
 
         # modes
@@ -168,6 +199,7 @@ class PipelineConfig:
             policy=policy,
             llm=llm,
             openhands=openhands,
+            atd_identification=atd_identification,
             modes=modes,
         )
 
@@ -178,7 +210,7 @@ def _validate_and_normalize_mode_params(params: Dict[str, Any], *, where: str) -
       - orchestrator: "minimal" | "multi_agent" (optional, default "multi_agent")
       - edge_variant: "E0" | "E1" | "E2" (optional; required iff orchestrator != minimal)
       - synthesizer_variant: "S0" | "S1" | "S2" (optional; required iff orchestrator != minimal)
-      - auxiliary_agent: "none" | "boundary" | "graph" | "review" (optional, default "none")
+      - auxiliary_agent: "none" | "boundary" | "graph" | "project" (optional, default "none")
     """
     out = dict(params)
 
@@ -191,10 +223,10 @@ def _validate_and_normalize_mode_params(params: Dict[str, Any], *, where: str) -
     if isinstance(aux, list):
         _die(f"{where}.auxiliary_agent must be a single string (max 1 auxiliary agent), not a list")
     aux = str(aux or "none").strip()
-    if aux not in {"none", "boundary", "graph", "review"}:
+    if aux not in {"none", "boundary", "graph", "project"}:
         _die(
             f"{where}.auxiliary_agent must be one of "
-            f"['none','boundary','graph','review'] (got {aux!r})"
+            f"['none','boundary','graph','project'] (got {aux!r})"
         )
     out["auxiliary_agent"] = aux
 

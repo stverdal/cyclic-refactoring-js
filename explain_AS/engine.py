@@ -4,10 +4,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agents.boundary import run_boundary_agent
+from agents.boundary import SCCEdge, run_boundary_agent
 from agents.edge import Edge, run_edge_agent
 from agents.graph import run_graph_agent
-from agents.review import run_review_agent
+from agents.project_context import run_project_context_agent
 from agents.synthesizer import run_synthesizer_agent
 from context import filtered_cycle_nodes, read_cycle_files, require_language
 from llm import LLMClient
@@ -30,69 +30,40 @@ def _parse_scc_id_from_cycle_id(cycle_id: str) -> Optional[str]:
     return None
 
 
-def _build_scc_text_from_report(scc_report: Dict[str, Any], scc_id: str) -> str:
+def _extract_scc_edges_from_report(scc_report: Dict[str, Any], scc_id: str) -> List[SCCEdge]:
+    """
+    Return structured edges for the SCC identified by *scc_id*.
+    Falls back to an empty list when the SCC is not found.
+    """
     for scc in (scc_report.get("sccs") or []):
         if str(scc.get("id")) != scc_id:
             continue
 
-        nodes = [str(n.get("id")) for n in (scc.get("nodes") or []) if isinstance(n, dict)]
-        edges = scc.get("edges") or []
-
-        lines: List[str] = []
-        lines.append(f"SCC id: {scc_id}")
-        lines.append("")
-        lines.append("Nodes:")
-        for n in nodes:
-            lines.append(f"- {n}")
-
-        lines.append("")
-        lines.append("Edges:")
-        for e in edges:
+        edges_raw = scc.get("edges") or []
+        result: List[SCCEdge] = []
+        for e in edges_raw:
             if not isinstance(e, dict):
                 continue
             src = str(e.get("source") or "")
             tgt = str(e.get("target") or "")
             if src and tgt:
-                lines.append(f"- {src} -> {tgt}")
+                result.append(SCCEdge(source=src, target=tgt))
+        return result
 
-        return "\n".join(lines).strip()
-
-    return ""
-
-
-def _extract_revised_explanation(reviewer_text: str) -> str:
-    """
-    Reviewer output headings:
-      Issues found (if any)
-      Suggested revisions
-      Revised explanation (this should replace the synthesizer output)
-
-    If we can find the "Revised explanation" section, return only that section body.
-    Otherwise, fall back to returning the full reviewer text.
-    """
-    txt = (reviewer_text or "").strip()
-    if not txt:
-        return ""
-
-    m = re.search(r"(?im)^\s*Revised explanation.*\s*$", txt)
-    if not m:
-        return txt
-
-    tail = txt[m.end():].strip()
-    return tail or txt
+    return []
 
 
 def _get_auxiliary_agent(params: Dict[str, Any]) -> str:
     """
     Non-legacy config:
-      params["auxiliary_agent"] in {"none","boundary","graph","review"}
+      params["auxiliary_agent"] in {"none","boundary","graph","project"}
     """
     aux = str(params.get("auxiliary_agent") or "none").strip().lower()
-    if aux not in {"none", "boundary", "graph", "review"}:
-        raise ValueError(f"auxiliary_agent must be one of none|boundary|graph|review (got {aux!r})")
+    if aux not in {"none", "boundary", "graph", "project"}:
+        raise ValueError(f"auxiliary_agent must be one of none|boundary|graph|project (got {aux!r})")
 
     # Optional: hard fail if legacy flags are present, to avoid silent behavior drift.
-    legacy_keys = {"enable_boundary_agent", "enable_graph_agent", "enable_reviewer_agent"}
+    legacy_keys = {"enable_boundary_agent", "enable_graph_agent", "enable_project_agent"}
     present = [k for k in legacy_keys if k in params]
     if present:
         raise ValueError(
@@ -114,6 +85,7 @@ def _run_multi_agent(
     client: LLMClient,
     transcript_path: str,
     repo_root: str,
+    src_root: str,
     language: str,
     cycle: Dict[str, Any],
     scc_report: Dict[str, Any],
@@ -143,6 +115,11 @@ def _run_multi_agent(
 
     files_by_node = read_cycle_files(repo_root=repo_root, cycle_nodes=cycle_nodes, skip_init=True)
 
+    # Extract structured SCC edges (used by boundary + graph agents)
+    cycle_id = str(cycle.get("id") or "")
+    scc_id = _parse_scc_id_from_cycle_id(cycle_id) or ""
+    scc_edges: List[SCCEdge] = _extract_scc_edges_from_report(scc_report, scc_id) if scc_id else []
+
     edge_reports: List[str] = []
     for edge in filtered_edges:
         report = run_edge_agent(
@@ -163,21 +140,28 @@ def _run_multi_agent(
             transcript_path=transcript_path,
             language=language,
             cycle_nodes=cycle_nodes,
+            scc_edges=scc_edges,
+            src_root=src_root,
         )
         aux_context = "=== Boundary heuristic agent ===\n" + boundary_text.strip()
 
     elif auxiliary_agent == "graph":
-        cycle_id = str(cycle.get("id") or "")
-        scc_id = _parse_scc_id_from_cycle_id(cycle_id) or ""
-        scc_text = _build_scc_text_from_report(scc_report, scc_id) if scc_id else ""
         graph_text = run_graph_agent(
             client=client,
             transcript_path=transcript_path,
             language=language,
             cycle_nodes=cycle_nodes,
-            scc_text=scc_text,
+            scc_edges=scc_edges,
         )
         aux_context = "=== Structural context agent ===\n" + graph_text.strip()
+
+    elif auxiliary_agent == "project":
+        project_text = run_project_context_agent(
+            client=client,
+            transcript_path=transcript_path,
+            repo_root=repo_root,
+        )
+        aux_context = "=== Project context agent ===\n" + project_text.strip()
 
     synthesizer_text = run_synthesizer_agent(
         client=client,
@@ -189,30 +173,14 @@ def _run_multi_agent(
         synthesizer_variant_id=synthesizer_variant_id,
     ).strip()
 
-    if auxiliary_agent == "review":
-        reviewer_text = run_review_agent(
-            client=client,
-            transcript_path=transcript_path,
-            language=language,
-            cycle_nodes=cycle_nodes,
-            edge_reports=edge_reports,
-            synthesizer_text=synthesizer_text,
-            aux_context=aux_context,  # will be "" in review-mode, but harmless
-        ).strip()
-        synthesizer_text = _extract_revised_explanation(reviewer_text).strip() or synthesizer_text
-
+    # Build final prompt: minimal base prompt + synthesizer output only
+    # (per-edge reports are already consumed by the synthesizer —
+    #  appending them again only wastes downstream token budget).
     minimal = build_minimal_prompt(cycle_nodes, language=language)
 
     explanation_block_parts: List[str] = []
     explanation_block_parts.append("=== Cycle explanation (multi-agent) ===")
     explanation_block_parts.append(synthesizer_text)
-
-    explanation_block_parts.append("")
-    explanation_block_parts.append("=== Per-edge reports (appendix) ===")
-    for i, (edge, report) in enumerate(zip(filtered_edges, edge_reports), 1):
-        explanation_block_parts.append("")
-        explanation_block_parts.append(f"--- Edge {i}: {edge.a} -> {edge.b} ---")
-        explanation_block_parts.append(report.strip())
 
     explanation_block = "\n".join(explanation_block_parts).strip() + "\n"
     final_prompt = (minimal + "\n" + explanation_block).rstrip() + "\n"
@@ -225,6 +193,7 @@ def run_explain_engine(
     client: LLMClient,
     transcript_path: str,
     repo_root: str,
+    src_root: str = "",
     language: str,
     cycle: Dict[str, Any],
     scc_report: Dict[str, Any],
@@ -243,6 +212,7 @@ def run_explain_engine(
         client=client,
         transcript_path=transcript_path,
         repo_root=repo_root,
+        src_root=src_root,
         language=language,
         cycle=cycle,
         scc_report=scc_report,

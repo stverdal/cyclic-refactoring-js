@@ -135,12 +135,21 @@ fi
 cd "$RUN_ROOT"
 
 set +e
+# Restore first with EnableWindowsTargeting so net*-windows projects work on Linux
+echo "Running: dotnet restore (EnableWindowsTargeting=true)" | tee "$LOG"
 if [[ -n "${DOTNET_TEST_TARGET:-}" ]]; then
-  echo "Running: dotnet test ${DOTNET_TEST_TARGET}  (workdir: $(pwd))" | tee "$LOG"
+  dotnet restore "${DOTNET_TEST_TARGET}" -p:EnableWindowsTargeting=true --nologo 2>&1 | tee -a "$LOG" || true
+else
+  dotnet restore -p:EnableWindowsTargeting=true --nologo 2>&1 | tee -a "$LOG" || true
+fi
+
+if [[ -n "${DOTNET_TEST_TARGET:-}" ]]; then
+  echo "Running: dotnet test ${DOTNET_TEST_TARGET}  (workdir: $(pwd))" | tee -a "$LOG"
   timeout -k 30s "$DOTNET_TEST_TIMEOUT" \
     dotnet test "${DOTNET_TEST_TARGET}" \
-      --nologo \
+      --nologo --no-restore \
       /p:CollectCoverage=false \
+      /p:EnableWindowsTargeting=true \
       --logger "trx" \
       --results-directory "$TRX_DIR" \
       2>&1 | tee -a "$LOG"
@@ -148,11 +157,12 @@ if [[ -n "${DOTNET_TEST_TARGET:-}" ]]; then
   echo "explicit_target" > "$OUT_ABS/test_strategy.txt"
   echo "${DOTNET_TEST_TARGET}" > "$OUT_ABS/test_target.txt"
 else
-  echo "Running: dotnet test  (workdir: $(pwd))" | tee "$LOG"
+  echo "Running: dotnet test  (workdir: $(pwd))" | tee -a "$LOG"
   timeout -k 30s "$DOTNET_TEST_TIMEOUT" \
     dotnet test \
-      --nologo \
+      --nologo --no-restore \
       /p:CollectCoverage=false \
+      /p:EnableWindowsTargeting=true \
       --logger "trx" \
       --results-directory "$TRX_DIR" \
       2>&1 | tee -a "$LOG"

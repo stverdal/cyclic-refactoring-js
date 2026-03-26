@@ -102,13 +102,11 @@ File A:
         )
 
     file_a_block, _file_a_was_truncated = format_block_for_prompt(
-        label="File A",
         repo_rel_path=edge.a,
         block_text=file_a_hard_capped_text,
         max_chars=int(file_a_char_budget),
     )
     file_b_block, _file_b_was_truncated = format_block_for_prompt(
-        label="File B",
         repo_rel_path=edge.b,
         block_text=file_b_hard_capped_text,
         max_chars=int(file_b_char_budget),
@@ -130,7 +128,7 @@ def run_edge_agent(
     language = require_language(language)
     edge_prompt_variant = require_edge_variant(edge_variant_id)
 
-    edge_agent = Agent(name="edge", system_prompt=edge_prompt_variant.system_prompt)
+    edge_agent = Agent(name="edge")
 
     user_prompt = build_edge_user_prompt(
         client=client,
@@ -146,6 +144,7 @@ def run_edge_agent(
         client=client,
         transcript_path=transcript_path,
         user_prompt=user_prompt,
+        preamble=edge_prompt_variant.system_prompt,
         edge=edge_str(edge.a, edge.b),
         min_output_tokens_reserved=int(EDGE_MIN_OUTPUT_TOKENS_RESERVED),
         safety_margin_tokens=int(EDGE_SAFETY_MARGIN_TOKENS),

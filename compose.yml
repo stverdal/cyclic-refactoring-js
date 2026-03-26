@@ -1,8 +1,10 @@
+name: atd-v2
+
 services:
   openhands:
     image: docker.all-hands.dev/all-hands-ai/openhands:0.57
-    container_name: openhands-app
-    ports: ["3000:3000"]
+    container_name: openhands-app-v2
+    ports: ["3001:3000"]
     environment:
       LLM_MODEL: "${LLM_MODEL}"
       LLM_BASE_URL: "${LLM_BASE_URL}"

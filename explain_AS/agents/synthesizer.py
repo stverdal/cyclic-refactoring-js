@@ -70,7 +70,6 @@ Edge reports (in cycle order, may be truncated):
     ):
         allocated_chars = max(1, tokens_to_chars(int(allocated_tokens))) if allocated_tokens > 0 else 1
         edge_report_block, _was_truncated = format_block_for_prompt(
-            label=f"Edge report {index}",
             repo_rel_path=f"EDGE_REPORT_{index}.txt",
             block_text=edge_report_text,
             max_chars=int(allocated_chars),
@@ -80,7 +79,6 @@ Edge reports (in cycle order, may be truncated):
     aux_allocated_tokens = budget_item_allocations_tokens[-1] if budget_item_allocations_tokens else 0
     aux_allocated_chars = max(1, tokens_to_chars(int(aux_allocated_tokens))) if aux_allocated_tokens > 0 else 1
     aux_block, _aux_truncated = format_block_for_prompt(
-        label="Aux context",
         repo_rel_path="AUX_CONTEXT.txt",
         block_text=normalized_aux_text,
         max_chars=int(aux_allocated_chars),
@@ -103,7 +101,7 @@ def run_synthesizer_agent(
     language = require_language(language)
     synthesizer_prompt_variant = require_synthesizer_variant(synthesizer_variant_id)
 
-    synthesizer_agent = Agent(name="synthesizer", system_prompt=synthesizer_prompt_variant.system_prompt)
+    synthesizer_agent = Agent(name="synthesizer")
 
     user_prompt = build_synthesizer_user_prompt(
         client=client,
@@ -119,6 +117,7 @@ def run_synthesizer_agent(
         client=client,
         transcript_path=transcript_path,
         user_prompt=user_prompt,
+        preamble=synthesizer_prompt_variant.system_prompt,
         min_output_tokens_reserved=int(SYNTHESIZER_MIN_OUTPUT_TOKENS_RESERVED),
         safety_margin_tokens=int(SYNTHESIZER_SAFETY_MARGIN_TOKENS),
         max_output_chars_soft=None,

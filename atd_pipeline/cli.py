@@ -165,7 +165,7 @@ def apply_test_llm_overrides(env: Dict[str, str]) -> Dict[str, str]:
     return env
 
 
-def run_explain_phase(pipeline_config: PipelineConfig, experiment_units: list) -> None:
+def run_explain_phase(pipeline_config: PipelineConfig, experiment_units: list) -> bool:
     def validate_unit_inputs(unit_run):
         scc_report_path = scc_report_path_for_unit_run(pipeline_config, unit_run)
         catalog_path = cycle_catalog_path_for_unit_run(pipeline_config, unit_run)
@@ -221,7 +221,7 @@ def run_explain_phase(pipeline_config: PipelineConfig, experiment_units: list) -
             return ("failed", "prompt.txt missing or empty after explain", artifacts)
         return ("ok", "", artifacts)
 
-    execute_phase_for_all_experiment_units(
+    return execute_phase_for_all_experiment_units(
         pipeline_config,
         experiment_units,
         phase="explain",
@@ -234,7 +234,7 @@ def run_explain_phase(pipeline_config: PipelineConfig, experiment_units: list) -
     )
 
 
-def run_openhands_phase(pipeline_config: PipelineConfig, experiment_units: list) -> None:
+def run_openhands_phase(pipeline_config: PipelineConfig, experiment_units: list) -> bool:
     def validate_unit_inputs(unit_run):
         prompt_output_path = prompt_text_path_for_unit_run(unit_run)
         if not prompt_output_path.exists() or prompt_output_path.stat().st_size == 0:
@@ -287,7 +287,7 @@ def run_openhands_phase(pipeline_config: PipelineConfig, experiment_units: list)
 
         return ("failed", f"openhands failed: {oh_outcome}", artifacts)
 
-    execute_phase_for_all_experiment_units(
+    return execute_phase_for_all_experiment_units(
         pipeline_config,
         experiment_units,
         phase="openhands",
@@ -300,7 +300,7 @@ def run_openhands_phase(pipeline_config: PipelineConfig, experiment_units: list)
     )
 
 
-def run_metrics_phase(pipeline_config: PipelineConfig, experiment_units: list) -> None:
+def run_metrics_phase(pipeline_config: PipelineConfig, experiment_units: list) -> bool:
     def validate_unit_inputs(unit_run):
         out_dir = openhands_output_dir_for_unit_run(unit_run)
         status_path = out_dir / "status.json"
@@ -343,7 +343,7 @@ def run_metrics_phase(pipeline_config: PipelineConfig, experiment_units: list) -
 
         return outcome
 
-    execute_phase_for_all_experiment_units(
+    return execute_phase_for_all_experiment_units(
         pipeline_config,
         experiment_units,
         phase="metrics",
@@ -477,8 +477,12 @@ def llm(
         require_baseline=True,
         require_cycle_catalogs=True,
     )
-    run_explain_phase(pipeline_config, experiment_units)
-    run_openhands_phase(pipeline_config, experiment_units)
+    explain_blocked = run_explain_phase(pipeline_config, experiment_units)
+    if explain_blocked:
+        raise SystemExit(42)
+    openhands_blocked = run_openhands_phase(pipeline_config, experiment_units)
+    if openhands_blocked:
+        raise SystemExit(42)
 
 
 if __name__ == "__main__":

@@ -70,46 +70,64 @@ def read_cycle_files(
     return file_text_by_node_id
 
 
-def _truncation_note(*, label: str, info: TruncationInfo) -> str:
-    return (
-        f"[NOTE: TRUNCATED. Showing first {info.kept_chars:,} chars out of {info.total_chars:,} "
-        f"due to context budget for {label}.]\n"
-    )
+def prompt_block_wrapper_len(repo_rel_path: str) -> int:
+    """
+    Exact wrapper length that format_block_for_prompt will use when it renders a wrapped block.
+    """
+    header = f"--- BEGIN {repo_rel_path} ---\n"
+    footer = f"\n--- END {repo_rel_path} ---\n"
+    return len(header) + len(footer)
 
 
 def format_block_for_prompt(
     *,
-    label: str,
     repo_rel_path: str,
     block_text: str,
     max_chars: int,
 ) -> Tuple[str, bool]:
     """
-    Generic block wrapper with BEGIN/END and a truncation note inside the block when truncated.
+    Generic block wrapper with BEGIN/END.
+
+    Behavior:
+    - Always returns a WRAPPED block when max_chars is large enough to include the full wrapper.
+    - If the body must be truncated, appends a small "[Truncated]" marker inside the wrapper.
+    - If max_chars is too small to fit the wrapper at all, returns "" (never emits a clipped wrapper line).
+
     Returns (block, was_truncated).
     """
+    raw_body = block_text or ""
+    trunc_suffix = "\n[Truncated]\n"
+
+    if max_chars <= 0:
+        return "", bool(raw_body)
+
     header = f"--- BEGIN {repo_rel_path} ---\n"
     footer = f"\n--- END {repo_rel_path} ---\n"
+    wrapper_len = len(header) + len(footer)
 
-    raw_body = block_text or ""
-    approx_note_len = 160  # conservative
-    overhead = len(header) + len(footer) + approx_note_len
-    body_budget = max(0, int(max_chars) - overhead)
+    # If we can't fit the wrapper, don't emit partial wrapper lines.
+    if int(max_chars) < int(wrapper_len):
+        return "", bool(raw_body)
+
+    # Budget remaining for body (may be 0).
+    body_budget = max(0, int(max_chars) - int(wrapper_len))
 
     trimmed_body, info = trim_text_bottom_with_info(raw_body, body_budget)
-    note = _truncation_note(label=label, info=info) if info.truncated else ""
-    block = header + note + trimmed_body + footer
+    if not info.truncated:
+        block = header + trimmed_body + footer
+        # Safety: shouldn't exceed max_chars, but keep invariant.
+        if len(block) > int(max_chars):
+            block = block[: int(max_chars)]
+        return block, False
 
-    # Second-pass guard if the approximation was off.
-    if len(block) > max_chars:
-        extra = len(block) - max_chars
-        adjusted_body_budget = max(0, body_budget - extra - 10)
-        trimmed_body_2, info_2 = trim_text_bottom_with_info(raw_body, adjusted_body_budget)
-        note_2 = _truncation_note(label=label, info=info_2) if info_2.truncated else ""
-        block = header + note_2 + trimmed_body_2 + footer
-        return block, info_2.truncated
+    # Truncated: reserve suffix inside body area when possible.
+    body_budget_with_suffix = max(0, int(max_chars) - int(wrapper_len) - len(trunc_suffix))
+    trimmed_body2, _info2 = trim_text_bottom_with_info(raw_body, body_budget_with_suffix)
 
-    return block, info.truncated
+    block = header + trimmed_body2 + trunc_suffix + footer
+    if len(block) > int(max_chars):
+        block = block[: int(max_chars)]
+    return block, True
 
 
 def cap_file_text_hard(file_text: str) -> Tuple[str, bool]:

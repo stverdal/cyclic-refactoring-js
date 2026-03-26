@@ -61,7 +61,7 @@ def _language_from_scc_report(scc_report: Dict[str, Any]) -> str:
 def main() -> None:
     argument_parser = argparse.ArgumentParser()
     argument_parser.add_argument("--repo-root", required=True)
-    argument_parser.add_argument("--src-root", required=True)  # kept for compatibility; not used here
+    argument_parser.add_argument("--src-root", required=True)
     argument_parser.add_argument("--scc-report", required=True)
     argument_parser.add_argument("--cycle-catalog", required=True)
     argument_parser.add_argument("--cycle-id", required=True)
@@ -87,7 +87,16 @@ def main() -> None:
     llm_usage_path = out_prompt_path.parent / "llm_usage.json"
 
     orchestrator_id = str(mode_params.get("orchestrator") or "multi_agent").strip()
-    temperature = float(mode_params.get("temperature", 0.1))
+    temperature = float(mode_params.get("temperature", 0.2))
+    top_p = mode_params.get("top_p")
+    top_k = mode_params.get("top_k")
+    seed = mode_params.get("seed")
+    if top_p is not None:
+        top_p = float(top_p)
+    if top_k is not None:
+        top_k = int(top_k)
+    if seed is not None:
+        seed = int(seed)
 
     should_call_llm = orchestrator_id != "minimal"
 
@@ -119,6 +128,9 @@ def main() -> None:
                 model=model,
                 context_length=context_length,
                 temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                seed=seed,
             )
         else:
             # Dummy client (never used).
@@ -134,6 +146,7 @@ def main() -> None:
             client=client,
             transcript_path=transcript_path,
             repo_root=repo_root,
+            src_root=str(Path(args.src_root).resolve()),
             language=language,
             cycle=cycle,
             scc_report=scc_report,

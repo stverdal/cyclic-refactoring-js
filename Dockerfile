@@ -14,6 +14,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && npm install -g dependency-cruiser typescript \
  && rm -rf /var/lib/apt/lists/*
 
+# ---- build tools + R statistical packages ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential python3-dev pkg-config \
+    libffi-dev libssl-dev libnss-wrapper \
+    r-base r-cran-lme4 r-cran-readr r-cran-dplyr r-cran-broom \
+ && rm -rf /var/lib/apt/lists/*
+
 # ---- install .NET SDKs ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget gnupg \

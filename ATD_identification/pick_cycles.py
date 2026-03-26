@@ -44,6 +44,31 @@ def cycle_edges(nodes: List[str], relation: str) -> List[Dict[str, str]]:
     return [{"source": nodes[i], "target": nodes[(i + 1) % m], "relation": relation} for i in range(m)]
 
 
+def _node_in_excluded_dir(node_id: str, exclude_dirs: List[str]) -> bool:
+    """Return True if *node_id* has a path segment matching any of *exclude_dirs*.
+
+    Comparison is case-insensitive on the directory name.
+    Accepts both exact segment matches and prefix/suffix patterns:
+        - 'VPA Framework' matches path segment 'VPA Framework'
+        - Also matches as a path prefix, e.g. 'src/VPA Framework/foo.cs'
+    """
+    if not exclude_dirs:
+        return False
+    parts = node_id.replace("\\", "/").split("/")
+    exclude_lower = [d.lower().strip("/") for d in exclude_dirs]
+    for part in parts[:-1]:  # skip filename, only check directory segments
+        pl = part.lower()
+        for excl in exclude_lower:
+            if pl == excl:
+                return True
+    # Also check if the full relative path starts with an excluded prefix
+    norm = node_id.replace("\\", "/").lower()
+    for excl in exclude_lower:
+        if norm.startswith(excl + "/") or ("/" + excl + "/") in norm:
+            return True
+    return False
+
+
 # -------------------------
 # Parsing / loading helpers
 # -------------------------
@@ -155,13 +180,14 @@ def _sample_cycles_in_scc(
                 # first occurrence of 'cur' back to 'cur'.
                 i = pos[cur]
                 cyc = path[i:] + [cur]  # closes at cur
-                if cyc[0] == cyc[-1]:
-                    cyc_nodes = cyc[:-1]
-                    if 2 <= len(cyc_nodes) <= max_len:
-                        key = canonicalize_cycle(cyc_nodes)
-                        if key and key not in seen:
-                            seen.add(key)
-                            found.append(list(key))
+                if cyc and cyc[0] == cyc[-1]:
+                    cyc = cyc[:-1]
+                cyc_nodes = cyc
+                if 2 <= len(cyc_nodes) <= max_len:
+                    key = canonicalize_cycle(cyc_nodes)
+                    if key and key not in seen:
+                        seen.add(key)
+                        found.append(list(key))
                 break
 
             path.append(cur)
@@ -237,6 +263,14 @@ def main() -> None:
     ap.add_argument("--attempts-per-scc", type=int, default=5000)
     ap.add_argument("--max-cycles-per-scc", type=int, default=200)
     ap.add_argument("--seed", type=int, default=12345)
+    ap.add_argument(
+        "--exclude-dirs", nargs="*", default=[],
+        help=(
+            "Directory names or path prefixes to exclude. Any cycle containing "
+            "a node under one of these directories is discarded. "
+            "Example: --exclude-dirs 'VPA Framework' tests"
+        ),
+    )
     args = ap.parse_args()
 
     dep_path = Path(args.dependency_graph).resolve()
@@ -281,6 +315,17 @@ def main() -> None:
             max_keep=args.max_cycles_per_scc,
         )
 
+        # Filter out cycles with nodes in excluded directories
+        if args.exclude_dirs:
+            before = len(sampled)
+            sampled = [
+                cyc for cyc in sampled
+                if not any(_node_in_excluded_dir(n, args.exclude_dirs) for n in cyc)
+            ]
+            excluded = before - len(sampled)
+            if excluded:
+                print(f"  scc_{scc_idx}: excluded {excluded} cycle(s) by --exclude-dirs")
+
         cycles_out: List[Dict[str, Any]] = []
         for j, cyc_nodes in enumerate(sampled):
             avg_pr_val = float(sum(pr.get(n, 0.0) for n in cyc_nodes) / max(1, len(cyc_nodes)))
@@ -323,6 +368,7 @@ def main() -> None:
             "attempts_per_scc": args.attempts_per_scc,
             "max_cycles_per_scc": args.max_cycles_per_scc,
             "seed": args.seed,
+            "exclude_dirs": args.exclude_dirs or [],
             "edge_disjoint": True,
             "edge_disjoint_scope": "within_scc",
             "directed_canonicalization": "rotation_only",

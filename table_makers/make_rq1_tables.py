@@ -107,25 +107,25 @@ def classify_outcome(row: Dict[str, Any]) -> str:
     Returns one of: 'success', 'behavior_regressed', 'structure_not_improved', 'both_failed', 'other_error'
     based on:
       - structural improvement: post_edges < pre_edges
-      - test non-regression: delta_tests_vs_base >= 0  (None => unknown)
+      - test non-regression: delta_tests_vs_base >= 0  (None/missing => assumed OK, matching success logic)
     """
     pre = row.get("pre_edges"); post = row.get("post_edges")
     if not isinstance(pre, (int, float)) or not isinstance(post, (int, float)):
         return "other_error"
 
     dtests = row.get("delta_tests_vs_base")
-    tests_ok = None if (dtests is None) else (dtests >= 0)
+    # Match collect_one: missing test data is treated as non-regressed
+    tests_ok = True if (dtests is None) else (dtests >= 0)
 
     struct_improved = post < pre
-    struct_not_improved = post >= pre
 
-    if tests_ok is True and struct_improved:
+    if tests_ok and struct_improved:
         return "success"
-    if tests_ok is False and struct_improved:
+    if not tests_ok and struct_improved:
         return "behavior_regressed"
-    if tests_ok is True and struct_not_improved:
+    if tests_ok and not struct_improved:
         return "structure_not_improved"
-    if tests_ok is False and struct_not_improved:
+    if not tests_ok and not struct_improved:
         return "both_failed"
     return "other_error"
 
@@ -148,6 +148,9 @@ def main():
     per_cycle_rows: List[Dict[str, Any]] = []
 
     # --------- Collect all per-cycle rows across ALL roots/experiments ----------
+    print(f"[DIAG] repos={[(r,b) for r,b,_ in repos]}", file=sys.stderr)
+    print(f"[DIAG] cycles_map keys={list(cycles_map.keys())}", file=sys.stderr)
+    print(f"[DIAG] cfgs={[(str(r),w,wo) for r,w,wo in cfgs]}", file=sys.stderr)
     for results_root, WITH_ID, WO_ID in cfgs:
         for repo, baseline_branch, _src_rel in repos:
             repo_dir = Path(results_root) / repo
@@ -156,7 +159,14 @@ def main():
             base_atd   = load_json_any(baseline_dir, ATD_METRICS)
             base_qual  = load_json_any(baseline_dir, QUALITY_METRICS)
             if base_atd is None or base_qual is None:
-                print(f"[WARN] Missing baseline ATD or quality metrics for {repo}@{baseline_branch} under {results_root}", file=sys.stderr)
+                print(f"[DIAG] SKIP {repo}: baseline_dir={baseline_dir} exists={baseline_dir.exists()} atd={'found' if base_atd else 'MISSING'} qual={'found' if base_qual else 'MISSING'}", file=sys.stderr)
+                if baseline_dir.exists():
+                    import os
+                    for root_d, dirs, files in os.walk(str(baseline_dir)):
+                        depth = root_d.replace(str(baseline_dir), '').count(os.sep)
+                        if depth < 3:
+                            for f in files[:10]:
+                                print(f"[DIAG]   {os.path.relpath(os.path.join(root_d, f), str(baseline_dir))}", file=sys.stderr)
                 continue
 
             pre = get_scc_metrics(base_atd)
@@ -166,6 +176,7 @@ def main():
             base_tests = get_tests_pass_percent(base_qual)
 
             cids = cycles_map.get((repo, baseline_branch), [])[:]
+            print(f"[DIAG] {repo}: baseline OK, {len(cids)} cycles, pre_edges={pre_edges}", file=sys.stderr)
             if not cids:
                 continue
 
@@ -187,6 +198,20 @@ def main():
                     atd = load_json_any(dirpath, ATD_METRICS)
                     qual = load_json_any(dirpath, QUALITY_METRICS)
                     if atd is None:
+                        # Show exactly which files were tried and what exists
+                        import os
+                        tried = [str(dirpath / c) for c in ATD_METRICS]
+                        exists = [str(dirpath / c) for c in ATD_METRICS if (dirpath / c).exists()]
+                        all_files = []
+                        for _r, _d, _f in os.walk(str(dirpath)):
+                            for fn in _f:
+                                all_files.append(os.path.relpath(os.path.join(_r, fn), str(dirpath)))
+                            if len(all_files) > 20:
+                                break
+                        print(f"[DIAG] collect_one FAIL: no ATD metrics in {dirpath}", file=sys.stderr)
+                        print(f"[DIAG]   tried: {ATD_METRICS}", file=sys.stderr)
+                        print(f"[DIAG]   found: {exists}", file=sys.stderr)
+                        print(f"[DIAG]   actual files: {all_files[:20]}", file=sys.stderr)
                         return None
                     post = get_scc_metrics(atd)
                     post_edges = post.get("total_edges_in_cyclic_sccs")
@@ -224,11 +249,37 @@ def main():
 
             for cid in cids:
                 with_dir = repo_dir / branch_for(WITH_ID, cid)
-                wo_dir   = repo_dir / branch_for(WO_ID,   cid)
+                # --- diagnostics (first 3 cycles per repo) ---
+                if cids.index(cid) < 3:
+                    print(f"[DIAG]   cid={cid}  with_dir={with_dir}", file=sys.stderr)
+                    print(f"[DIAG]     with_dir exists={with_dir.exists()}", file=sys.stderr)
+                    if with_dir.exists():
+                        import os
+                        top_files = []
+                        for _r, _d, _f in os.walk(str(with_dir)):
+                            for fn in _f[:5]:
+                                top_files.append(os.path.relpath(os.path.join(_r, fn), str(with_dir)))
+                            break
+                        print(f"[DIAG]     with_dir contents: {top_files}", file=sys.stderr)
+                    elif repo_dir.exists():
+                        # List what branch dirs actually exist
+                        branches_base = repo_dir / "branches"
+                        if branches_base.exists():
+                            atd_dirs = sorted([d.name for d in branches_base.iterdir() if d.is_dir() and d.name.startswith("atd-")])[:5]
+                            print(f"[DIAG]     actual atd-* branches: {atd_dirs}", file=sys.stderr)
+                            print(f"[DIAG]     expected branch_for={branch_for(WITH_ID, cid)}", file=sys.stderr)
+                # --- end diagnostics ---
                 row_with = collect_one(with_dir, cid, WITH_ID, "with")
-                row_wo   = collect_one(wo_dir,   cid, WO_ID,   "without")
+                row_wo = None
+                if WO_ID is not None:
+                    wo_dir = repo_dir / branch_for(WO_ID, cid)
+                    row_wo = collect_one(wo_dir, cid, WO_ID, "without")
+                if cids.index(cid) < 3:
+                    print(f"[DIAG]     row_with={'OK' if row_with else 'None'}  row_wo={'OK' if row_wo else 'None'}", file=sys.stderr)
                 if row_with: per_cycle_rows.append(row_with)
                 if row_wo:   per_cycle_rows.append(row_wo)
+
+    print(f"[DIAG] Total per_cycle_rows collected: {len(per_cycle_rows)}", file=sys.stderr)
 
     # ---------- Per-project aggregation (ACROSS ALL EXPERIMENTS/ROOTS) ----------
     def aggregate_rows(rows: List[Dict[str, Any]], repo_name: str, condition_label: str) -> Optional[Dict[str, Any]]:

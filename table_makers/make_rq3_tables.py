@@ -97,8 +97,10 @@ def main():
                     # silently skip sizes outside requested bins
                     continue
 
-                for variant_label in ("with", "without"):
-                    exp_label = WITH_ID if variant_label == "with" else WO_ID
+                variants = [("with", WITH_ID)]
+                if WO_ID is not None:
+                    variants.append(("without", WO_ID))
+                for variant_label, exp_label in variants:
                     new_dir = repo_dir / branch_for(exp_label, cid)
 
                     copied_marker = (new_dir / ".copied_metrics_marker").exists()

@@ -82,24 +82,25 @@ def parse_experiment_branch(name: str) -> Optional[Tuple[str, str]]:
 def load_repos_all(path: Path) -> Dict[str, Tuple[str, str, str]]:
     """
     Parse repos_all.txt -> {repo_name: (branch, src_rel, language)}.
-    Stops at blank lines or lines starting with non-repo text.
+    Handles trailing comments like  (Bare 4354 LOC).
+    Stops at lines starting with 'NOT '.
     """
     out: Dict[str, Tuple[str, str, str]] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or line.startswith("NOT "):
+        if not line or line.startswith("#"):
             continue
+        if line.upper().startswith("NOT "):
+            break  # everything after "NOT WORKING" is excluded
+        # Strip trailing parenthetical comments:  (Bare 4354 LOC)
+        line = re.sub(r'\s*\(.*\)\s*$', '', line).strip()
         parts = line.split()
         if len(parts) < 2:
             continue
-        # Skip comment-like things (lines with parenthetical notes only)
         repo = parts[0]
         branch = parts[1]
-        src_rel = parts[2] if len(parts) >= 3 else ""
+        src_rel = parts[2] if len(parts) >= 3 else "."
         lang = parts[3] if len(parts) >= 4 else "unknown"
-        # Only take clean entries (no parenthetical notes in repo name)
-        if "(" in repo or repo.isupper():
-            continue
         out[repo] = (branch, src_rel, lang)
     return out
 
@@ -109,6 +110,8 @@ def main() -> None:
     ap.add_argument("--results-root", required=True, help="Path to results/ directory")
     ap.add_argument("--exp-id", default=None,
                     help="Only consider experiment branches for this exp-id (+ _without_explanation variant)")
+    ap.add_argument("--repo", default=None, action="append", dest="repos_filter",
+                    help="Only include this repo (can be repeated, e.g. --repo jinja --repo kombu)")
     ap.add_argument("--repos-out", default="repos.txt", help="Output repos.txt path")
     ap.add_argument("--cycles-out", default="cycles_to_analyze.txt", help="Output cycles_to_analyze.txt path")
     ap.add_argument("--repos-all", default=None,
@@ -124,47 +127,128 @@ def main() -> None:
     if not results_root.is_dir():
         raise SystemExit(f"Results root not found: {results_root}")
 
-    # Load repos_all for metadata lookup
+    # Load repos_all for metadata lookup  (auto-detect if not given)
     repos_all: Dict[str, Tuple[str, str, str]] = {}
-    if args.repos_all:
-        repos_all_path = Path(args.repos_all).resolve()
+    repos_all_arg = args.repos_all
+    if not repos_all_arg:
+        # Auto-detect: check for repos_all.txt next to results root
+        candidate = results_root.parent / "repos_all.txt"
+        if candidate.exists():
+            repos_all_arg = str(candidate)
+            print(f"[INFO] Auto-detected repos_all.txt at {candidate}")
+    if repos_all_arg:
+        repos_all_path = Path(repos_all_arg).resolve()
         if repos_all_path.exists():
             repos_all = load_repos_all(repos_all_path)
+            print(f"[INFO] Loaded {len(repos_all)} repos from {repos_all_path}")
 
     # Determine which exp_ids to consider
     exp_ids_filter: Optional[set] = None
     if args.exp_id:
-        exp_ids_filter = {args.exp_id, f"{args.exp_id}_without_explanation"}
+        # After sanitize(), underscores become dashes in branch names.
+        # Include both forms so the filter matches.
+        eid = args.exp_id
+        wo = f"{eid}_without_explanation"
+        eid_san = eid.replace("_", "-")
+        wo_san = wo.replace("_", "-")
+        exp_ids_filter = {eid, wo, eid_san, wo_san}
 
     # Scan results/
     repos_found: Dict[str, str] = {}  # repo -> baseline_branch
     cycles_found: Dict[Tuple[str, str], List[str]] = {}  # (repo, baseline) -> [cycle_ids]
 
+    repos_filter_set = set(args.repos_filter) if args.repos_filter else None
+    if repos_filter_set:
+        print(f"[INFO] Filtering to repos: {repos_filter_set}")
+
     for repo_dir in sorted(results_root.iterdir()):
         if not repo_dir.is_dir():
             continue
         repo = repo_dir.name
+        if repos_filter_set and repo not in repos_filter_set:
+            continue
         branches_dir = repo_dir / "branches"
         if not branches_dir.is_dir():
+            print(f"  [DEBUG] {repo}: no branches/ directory, skipping")
             continue
 
         # Find baseline branch(es) — those not starting with atd-
         baselines: List[str] = []
+        baselines_no_metrics: List[str] = []
         experiment_branches: List[str] = []
 
-        for branch_dir in sorted(branches_dir.iterdir()):
-            if not branch_dir.is_dir():
-                continue
-            bname = branch_dir.name
-            if bname.startswith("atd-"):
-                experiment_branches.append(bname)
-            else:
-                if args.require_baseline and not has_atd_metrics(branch_dir):
+        # Discover branch directories recursively.
+        # A directory is a "branch leaf" if it contains ATD_identification/,
+        # code_quality_checks/, or starts with atd-.
+        # Otherwise, descend into its children (handles branches like dev/v5).
+        def discover_branches(parent: Path, prefix: str = "") -> None:
+            for child in sorted(parent.iterdir()):
+                if not child.is_dir():
                     continue
-                baselines.append(bname)
+                bname = f"{prefix}{child.name}" if prefix else child.name
+
+                # If it starts with atd-, it's an experiment branch at any depth
+                if child.name.startswith("atd-"):
+                    experiment_branches.append(bname)
+                    continue
+
+                # Check if this looks like a branch leaf (has known subdirs/files)
+                is_leaf = (
+                    (child / "ATD_identification").is_dir()
+                    or (child / "code_quality_checks").is_dir()
+                    or any(child.iterdir())  # has content
+                    and not any(  # but none of its children are directories with branches
+                        (child / c).is_dir()
+                        and not c.startswith("ATD_")
+                        and not c.startswith("code_quality")
+                        and c not in {"ATD_identification", "code_quality_checks", ".git"}
+                        for c in [d.name for d in child.iterdir() if d.is_dir()]
+                    )
+                )
+
+                # More reliable: if it has ATD_identification/ or code_quality_checks/, it's a leaf
+                has_known = (
+                    (child / "ATD_identification").is_dir()
+                    or (child / "code_quality_checks").is_dir()
+                )
+
+                if has_known:
+                    # It's a real branch directory
+                    if has_atd_metrics(child):
+                        baselines.append(bname)
+                    else:
+                        baselines_no_metrics.append(bname)
+                else:
+                    # No known dirs — check if children are subdirectories (nested branch like dev/v5)
+                    subdirs = [d for d in child.iterdir() if d.is_dir()]
+                    if subdirs:
+                        discover_branches(child, prefix=f"{bname}/")
+                    else:
+                        # Leaf with no known structure — treat as baseline without metrics
+                        baselines_no_metrics.append(bname)
+
+        discover_branches(branches_dir)
+
+        # If require_baseline is off, include baselines without metrics too
+        if not args.require_baseline:
+            baselines.extend(baselines_no_metrics)
+            baselines_no_metrics = []
 
         if not baselines:
-            # Could not find a baseline; skip this repo
+            if baselines_no_metrics:
+                print(f"  [DEBUG] {repo}: found branch(es) {baselines_no_metrics} but none have ATD metrics")
+                print(f"  [DEBUG]   checked for: {ATD_CANDIDATES}")
+                for bname in baselines_no_metrics:
+                    bd = branches_dir / bname
+                    atd_dir = bd / "ATD_identification"
+                    if atd_dir.is_dir():
+                        files = [f.name for f in atd_dir.iterdir() if f.is_file()]
+                        print(f"  [DEBUG]   {bname}/ATD_identification/ contains: {files}")
+                    else:
+                        print(f"  [DEBUG]   {bname}/ATD_identification/ does not exist")
+                print(f"  [HINT]  Try --no-require-baseline to include {repo} anyway")
+            else:
+                print(f"  [DEBUG] {repo}: no non-atd branches found (only {len(experiment_branches)} experiment branches)")
             continue
 
         # Use the first baseline (there should typically be only one)
@@ -177,20 +261,23 @@ def main() -> None:
         for bname in experiment_branches:
             parsed = parse_experiment_branch(bname)
             if parsed is None:
+                print(f"  [DEBUG] Could not parse branch: {bname}")
                 continue
             exp_id, cycle_id = parsed
             if exp_ids_filter and exp_id not in exp_ids_filter:
+                print(f"  [DEBUG] Skipping branch {bname}: exp_id '{exp_id}' not in filter {exp_ids_filter}")
                 continue
             if cycle_id in seen_cids:
                 continue
-            # Optionally check that the branch actually has metrics
-            branch_dir = branches_dir / bname
-            if has_atd_metrics(branch_dir):
-                seen_cids.add(cycle_id)
-                cids.append(cycle_id)
+            seen_cids.add(cycle_id)
+            cids.append(cycle_id)
 
         if cids:
             cycles_found[(repo, baseline)] = sorted(set(cids))
+        
+        if not cids and experiment_branches:
+            print(f"  [DEBUG] {repo}: found {len(experiment_branches)} experiment branches but 0 matched.")
+            print(f"  [DEBUG]   first 3 branches: {experiment_branches[:3]}")
 
     # Write repos.txt
     repos_out = Path(args.repos_out)

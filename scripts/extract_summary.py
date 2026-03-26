@@ -333,6 +333,8 @@ def collect_diff_stats(
                 continue
             for cid in cids:
                 for cond_label, exp_label in [("with", with_id), ("without", wo_id)]:
+                    if exp_label is None:
+                        continue
                     branch = branch_for(exp_label, cid)
                     # Check if the branch directory exists at all
                     branch_dir_candidates = [
@@ -423,15 +425,15 @@ def print_rq1(outdir: Path, width: int, repo_filter: Optional[str] = None) -> No
     # ── Per-project summary (when filtering by repo) ──
     if repo_filter and pc:
         for cond in ("with", "without"):
-            cond_rows = [r for r in pc if r.get("Condition", "").strip() == cond]
+            cond_rows = [r for r in pc if r.get("condition", "").strip() == cond]
             n_total = len(cond_rows)
-            n_success = sum(1 for r in cond_rows if r.get("Success", "").strip() in ("1", "True", "true"))
+            n_success = sum(1 for r in cond_rows if r.get("succ", "").strip() in ("1", "True", "true"))
             succ_pct = (100.0 * n_success / n_total) if n_total else 0
             print(f"  {cond.upper()} explanation:  {n_success}/{n_total} success ({succ_pct:.1f}%)")
 
             # Delta metrics for successful runs
-            succ_rows = [r for r in cond_rows if r.get("Success", "").strip() in ("1", "True", "true")]
-            for metric, key in [("ΔEdges", "ΔEdges"), ("ΔNodes", "ΔNodes"), ("ΔLOC", "ΔLOC")]:
+            succ_rows = [r for r in cond_rows if r.get("succ", "").strip() in ("1", "True", "true")]
+            for metric, key in [("ΔEdges", "delta_edges"), ("ΔNodes", "delta_nodes"), ("ΔLOC", "delta_loc")]:
                 vals = []
                 for r in succ_rows:
                     try:
@@ -448,13 +450,13 @@ def print_rq1(outdir: Path, width: int, repo_filter: Optional[str] = None) -> No
         print(f"  Per-Cycle Detail ({repo_filter}):")
         print(f"    {'Cycle ID':20s} {'Cond':7s} {'Success':>7s} {'ΔEdge':>7s} {'ΔNode':>7s} {'ΔLOC':>7s}")
         print(f"    {THIN_SEP_CHAR * 60}")
-        for r in sorted(pc, key=lambda x: (x.get("cycle_id", ""), x.get("Condition", ""))):
+        for r in sorted(pc, key=lambda x: (x.get("cycle_id", ""), x.get("condition", ""))):
             cid = (r.get("cycle_id") or "")[:19]
-            cond = (r.get("Condition") or "")[:6]
-            succ = "YES" if r.get("Success", "").strip() in ("1", "True", "true") else "no"
-            de = fv(r.get("ΔEdges"))
-            dn = fv(r.get("ΔNodes"))
-            dl = fv(r.get("ΔLOC"))
+            cond = (r.get("condition") or "")[:6]
+            succ = "YES" if r.get("succ", "").strip() in ("1", "True", "true") else "no"
+            de = fv(r.get("delta_edges"))
+            dn = fv(r.get("delta_nodes"))
+            dl = fv(r.get("delta_loc"))
             print(f"    {cid:20s} {cond:7s} {succ:>7s} {de:>7s} {dn:>7s} {dl:>7s}")
         print()
 

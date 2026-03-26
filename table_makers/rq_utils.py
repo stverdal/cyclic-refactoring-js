@@ -39,7 +39,7 @@ def read_repos_file(path: Path) -> List[Tuple[str, str, str]]:
 # ---------- helpers ----------
 def sanitize(s: str) -> str:
     s = s.replace(" ", "-")
-    s = re.sub(r"[^A-Za-z0-9._/-]", "-", s)
+    s = re.sub(r"[^A-Za-z0-9._/_-]", "-", s)
     s = re.sub(r"-+", "-", s)
     s = s.strip("-/")
     return s
@@ -89,16 +89,25 @@ def cycle_size_from_baseline(base_repo_branch_dir: Path, cycle_id: str) -> Optio
         mod = read_json(base_repo_branch_dir / ATD_MODULE_CYCLES_FALLBACK)
     if not mod:
         return None
-    # Support both module_cycles.json (sccs[].representative_cycles[])
-    # and cycle_catalog.json (cycles[] flat list)
+    # Support module_cycles.json (sccs[].representative_cycles[])
+    # and cycle_catalog.json (sccs[].cycles[] or cycles[] flat list)
     for scc in mod.get("sccs", []):
+        # module_cycles.json uses "representative_cycles"
         for cyc in scc.get("representative_cycles", []):
             if str(cyc.get("id")) == str(cycle_id):
                 if "length" in cyc and isinstance(cyc["length"], int):
                     return int(cyc["length"])
                 nodes = cyc.get("nodes") or []
                 return int(len(nodes))
-    # cycle_catalog.json stores cycles as a flat list
+        # cycle_catalog.json (from pick_cycles.py) uses "cycles"
+        for cyc in scc.get("cycles", []):
+            cid = cyc.get("id") or cyc.get("cycle_id")
+            if str(cid) == str(cycle_id):
+                if "length" in cyc and isinstance(cyc["length"], int):
+                    return int(cyc["length"])
+                nodes = cyc.get("nodes") or cyc.get("modules") or []
+                return int(len(nodes))
+    # also try a top-level flat "cycles" list (legacy format)
     for cyc in mod.get("cycles", []):
         cid = cyc.get("id") or cyc.get("cycle_id")
         if str(cid) == str(cycle_id):
@@ -209,11 +218,12 @@ def mcnemar_p(b: int, c: int) -> float:
     return float(res.pvalue)
 
 # ---------- new: simple mapping roots <-> exp ids ----------
-def map_roots_exps(results_roots: List[str], exp_ids: List[str]) -> List[Tuple[Path, str, str]]:
+def map_roots_exps(results_roots: List[str], exp_ids: List[str]) -> List[Tuple[Path, str, Optional[str]]]:
     """
     Returns a list of (results_root, EXP_WITH, EXP_WITHOUT) by pairing
     each ROOT with the EXP at the same position. WITHOUT is derived as
-    '<EXP>_without_explanation'.
+    '<EXP>_without_explanation'.  If no branches matching the WITHOUT
+    pattern exist on disk, EXP_WITHOUT is None (single-condition run).
     """
     if not results_roots:
         raise SystemExit("Missing --results-roots")
@@ -223,7 +233,26 @@ def map_roots_exps(results_roots: List[str], exp_ids: List[str]) -> List[Tuple[P
         raise SystemExit("Expected same number of --results-roots and --exp-ids")
     out = []
     for root, exp in zip(results_roots, exp_ids):
-        out.append((Path(root), exp, f"{exp}_without_explanation"))
+        wo_id = f"{exp}_without_explanation"
+        # Check whether any without-branches actually exist on disk
+        root_path = Path(root)
+        wo_prefix = f"atd-{sanitize(wo_id)}-"
+        wo_found = False
+        if root_path.is_dir():
+            for repo_dir in root_path.iterdir():
+                branches_dir = repo_dir / "branches"
+                if branches_dir.is_dir():
+                    for d in branches_dir.iterdir():
+                        if d.is_dir() and d.name.startswith(wo_prefix):
+                            wo_found = True
+                            break
+                if wo_found:
+                    break
+        if not wo_found:
+            import sys
+            print(f"[INFO] No '_without_explanation' branches found for {exp} — running single-condition.", file=sys.stderr)
+            wo_id = None
+        out.append((Path(root), exp, wo_id))
     return out
 
 # --- experiment labels ---

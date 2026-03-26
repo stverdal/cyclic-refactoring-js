@@ -3,11 +3,83 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import networkx as nx
+
+
+# Default directory patterns to exclude from the dependency graph before SCC
+# computation.  Each pattern is matched (case-insensitive) against every path
+# segment of a node id.  E.g. "test" matches "tests/", "test/", "__tests__/".
+_DEFAULT_EXCLUDE_DIR_PATTERNS: List[str] = [
+    "test",
+    "tests",
+    "__tests__",
+    "__test__",
+    "test_*",
+    "*_test",
+    "*_tests",
+    "spec",
+    "specs",
+    "__mocks__",
+    "fixtures",
+    "testutils",
+    "testing",
+]
+
+# Filename infixes that indicate a colocated test file (e.g. foo.test.ts,
+# bar.spec.jsx).  Checked against the leaf filename, case-insensitively.
+_TEST_FILE_INFIXES = (".test.", ".spec.", ".tests.", ".specs.")
+
+
+def _compile_exclude_patterns(patterns: List[str]) -> List[re.Pattern]:
+    """Compile glob-like directory name patterns into regexes.
+
+    Supports '*' as a wildcard (maps to '.*').  Each pattern is anchored
+    to match an entire path segment (directory or filename without extension).
+    """
+    compiled: List[re.Pattern] = []
+    for pat in patterns:
+        # Convert simple glob '*' to regex '.*'
+        regex = re.escape(pat).replace(r"\*", ".*")
+        compiled.append(re.compile(f"^{regex}$", re.IGNORECASE))
+    return compiled
+
+
+def _is_test_filename(filename: str) -> bool:
+    """Return True if *filename* looks like a colocated test file.
+
+    Matches: foo.test.ts, bar.spec.jsx, test_utils.py, widget_test.cs, etc.
+    """
+    fl = filename.lower()
+    for infix in _TEST_FILE_INFIXES:
+        if infix in fl:
+            return True
+    # Also check the stem for test_ prefix / _test suffix
+    stem = fl
+    while "." in stem:
+        stem = stem.rsplit(".", 1)[0]
+    if stem.startswith("test_") or stem.endswith("_test") or stem.endswith("_tests"):
+        return True
+    return False
+
+
+def _node_matches_exclude(node_id: str, compiled: List[re.Pattern]) -> bool:
+    """Return True if any path segment of *node_id* matches an exclude pattern,
+    or if the leaf filename looks like a colocated test file."""
+    parts = node_id.replace("\\", "/").split("/")
+    # Check the filename (leaf) for colocated test-file patterns
+    if parts and _is_test_filename(parts[-1]):
+        return True
+    # Check every segment against compiled directory-name patterns
+    for part in parts:
+        for rx in compiled:
+            if rx.match(part):
+                return True
+    return False
 
 
 def utc_now() -> str:
@@ -50,7 +122,27 @@ def main() -> None:
     ap.add_argument("--pagerank-alpha", type=float, default=0.85, help="PageRank alpha (default 0.85)")
     ap.add_argument("--pagerank-max-iter", type=int, default=100, help="PageRank max iterations (default 100)")
     ap.add_argument("--pagerank-tol", type=float, default=1e-6, help="PageRank tolerance (default 1e-6)")
+    ap.add_argument(
+        "--exclude-patterns",
+        nargs="*",
+        default=None,
+        help=(
+            "Directory/file name patterns to exclude from the graph before SCC "
+            "computation.  Supports simple '*' globs.  Matched case-insensitively "
+            "against each path segment of a node id.  "
+            "Default: common test directories (tests, __tests__, spec, …).  "
+            "Pass an empty list (--exclude-patterns) to disable all exclusions."
+        ),
+    )
     args = ap.parse_args()
+
+    # Resolve exclude patterns: None → defaults, [] → no exclusions
+    if args.exclude_patterns is None:
+        exclude_patterns = list(_DEFAULT_EXCLUDE_DIR_PATTERNS)
+    else:
+        exclude_patterns = list(args.exclude_patterns)
+
+    compiled_excludes = _compile_exclude_patterns(exclude_patterns)
 
     dep_path = Path(args.dependency_graph_json)
     out_path = Path(args.out)
@@ -70,6 +162,24 @@ def main() -> None:
         relation = edges[0].get("relation", relation) or relation
 
     abs_by_id: Dict[str, str] = {n["id"]: str(n.get("abs_path", "")) for n in nodes if "id" in n}
+
+    # Filter out excluded nodes (test directories, etc.)
+    excluded_count = 0
+    if compiled_excludes:
+        kept_nodes = []
+        kept_ids: Set[str] = set()
+        for n in nodes:
+            nid = str(n["id"])
+            if _node_matches_exclude(nid, compiled_excludes):
+                excluded_count += 1
+            else:
+                kept_nodes.append(n)
+                kept_ids.add(nid)
+        nodes = kept_nodes
+        edges = [e for e in edges if str(e["source"]) in kept_ids and str(e["target"]) in kept_ids]
+
+        if excluded_count > 0:
+            print(f"  Excluded {excluded_count} node(s) matching patterns: {exclude_patterns}")
 
     # Build full graph
     G = nx.DiGraph()
@@ -183,6 +293,8 @@ def main() -> None:
             "pagerank_alpha": args.pagerank_alpha,
             "pagerank_max_iter": args.pagerank_max_iter,
             "pagerank_tol": args.pagerank_tol,
+            "exclude_patterns": exclude_patterns,
+            "excluded_node_count": excluded_count,
         },
         "global_metrics": global_metrics,
         "node_features": node_features,

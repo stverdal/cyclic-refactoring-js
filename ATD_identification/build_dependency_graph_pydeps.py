@@ -64,6 +64,62 @@ def is_in_vendor_dir(path: str, repo_root: str) -> bool:
     return False
 
 
+# Common test-directory names (case-insensitive match on path segments)
+_TEST_DIR_NAMES = frozenset({
+    "test", "tests", "__tests__", "__test__",
+    "spec", "specs", "__mocks__", "fixtures",
+    "testutils", "testing",
+})
+
+
+def _is_test_file(filename: str) -> bool:
+    """Return True if *filename* (basename only) looks like a test file.
+
+    Matches: test_foo.py, foo_test.py, foo.test.py, foo.spec.py, etc.
+    """
+    fl = filename.lower()
+    for infix in (".test.", ".spec.", ".tests.", ".specs."):
+        if infix in fl:
+            return True
+    # Strip extension(s) → stem
+    stem = fl
+    while "." in stem:
+        stem = stem.rsplit(".", 1)[0]
+    if stem.startswith("test_") or stem.endswith("_test") or stem.endswith("_tests"):
+        return True
+    return False
+
+
+def is_in_test_dir(path: str, repo_root: str) -> bool:
+    """
+    Return True if *path* is inside a directory whose name (case-insensitive)
+    matches a common test-directory pattern, relative to *repo_root*, **or**
+    if the file itself is a colocated test file (test_foo.py, foo_test.py,
+    foo.spec.py, etc.).
+
+    Also matches segments that start with 'test_' or end with '_test'/'_tests'.
+    """
+    try:
+        rel = os.path.relpath(os.path.realpath(path), os.path.realpath(repo_root))
+    except Exception:
+        return False
+
+    parts = rel.replace("\\", "/").split("/")
+
+    # Check the filename (last segment) for colocated test file patterns
+    if parts and _is_test_file(parts[-1]):
+        return True
+
+    for p in parts:
+        pl = p.lower()
+        if pl in _TEST_DIR_NAMES:
+            return True
+        if pl.startswith("test_") or pl.endswith("_test") or pl.endswith("_tests"):
+            return True
+
+    return False
+
+
 
 # ---------- TYPE_CHECKING-aware import filter ----------
 
@@ -137,6 +193,18 @@ def main() -> None:
     ap.add_argument("--entry", required=True, help="Entry/source subdir within repo (stored as metadata)")
     ap.add_argument("--out", required=True, help="Output path for dependency_graph.json")
     ap.add_argument("--language", default="python", help="Language label (default: python)")
+    ap.add_argument(
+        "--exclude-tests",
+        action="store_true",
+        default=True,
+        help="Exclude files inside common test directories (default: enabled).",
+    )
+    ap.add_argument(
+        "--no-exclude-tests",
+        dest="exclude_tests",
+        action="store_false",
+        help="Disable automatic test-directory exclusion.",
+    )
     args = ap.parse_args()
 
     repo_root = os.path.realpath(args.repo_root)
@@ -163,6 +231,10 @@ def main() -> None:
 
         # Skip vendor / vendors directories
         if is_in_vendor_dir(rp, repo_root):
+            continue
+
+        # Skip test directories (unless --no-exclude-tests)
+        if args.exclude_tests and is_in_test_dir(rp, repo_root):
             continue
 
         # Case-sensitive existence check

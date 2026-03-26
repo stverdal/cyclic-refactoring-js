@@ -180,6 +180,9 @@ scripts/build_cycles_to_analyze.sh -c configs/pipeline.yaml \
   --max-size 8 \
   --out cycles_to_analyze.txt
 ```
+scripts/build_cycles_to_analyze.sh -c configs/pipeline.yaml --total 10 --min-size 2 --max-size 8 --out cycles_to_analyze.txt
+
+
 
 The `--strategy` flag controls how cycles are selected:
 
@@ -195,6 +198,9 @@ scripts/build_cycles_to_analyze.sh -c configs/pipeline.yaml \
   --max-size 5 \
   --strategy importance \
   --out cycles_to_analyze.txt
+
+
+  scripts/build_cycles_to_analyze.sh -c configs/pipeline.yaml --total 20 --min-size 2 --max-size 8 --strategy importance --out cycles_to_analyze.txt
 ```
 
 LLM-based refactoring is performed using:
@@ -209,7 +215,46 @@ Post-refactoring metrics are collected using:
 
 ```bash
 scripts/run_metrics.sh -c configs/pipeline.yaml --modes explain_multiAgent1 --modes explain_multiAgent2
-```
+
+
+scripts/run_metrics.sh -c configs/pipeline.yaml --modes explain_E0_S0_noaux
+
+
+
+./run_make_rq_tables.sh --results-roots <RESULTS_DIR> --exp-ids <EXP_ID> --repos-file repos.txt --cycles-file cycles_to_analyze.txt --outdir analysis_out
+
+./run_make_rq_tables.sh --results-roots results --exp-ids expD-explain_E0_S0_noaux --repos-file reposAC.txt --cycles-file cycles_to_analyzeAC.txt --outdir analysis_out
+
+
+python3 scripts/extract_summary.py \
+  --outdir analysis_out \
+  --results-roots <RESULTS_DIR> \
+  --exp-ids <EXP_ID> \
+  --repos-file repos.txt \
+  --cycles-file cycles_to_analyze.txt \
+  --top-diffs 5 \
+  --width 120 \
+  > analysis_out/summary.txt 2>&1
+
+
+
+  python3 scripts/extract_summary.py \
+  --outdir analysis_out \
+  --results-roots <RESULTS_DIR> \
+  --exp-ids <EXP_ID> \
+  --repos-file repos.txt \
+  --cycles-file cycles_to_analyze.txt \
+  --repo <PROJECT_NAME> \
+  --top-diffs 3 \
+  --width 120 \
+  > analysis_out/summary_<PROJECT_NAME>.txt 2>&1
+
+
+
+
+python3 scripts/extract_summary.py --outdir analysis_out --results-roots results --exp-ids expD-explain_E0_S0_noaux --repos-file reposAC.txt --cycles-file cycles_to_analyzeAC.txt --repo AKVAconnect --top-diffs 3 --width 120 > analysis_out/summary_AKVAconnect.txt 2>&1
+
+python3 scripts/extract_summary.py --outdir analysis_out --results-roots results --exp-ids expE-explain_E0_S0_noaux --repos-file reposF.txt --cycles-file cycles_to_analyzeFish.txt --repo Fishtalk --top-diffs 3 --width 120 > analysis_out/summary_Fishtalk.txt 2>&1
 
 ---
 

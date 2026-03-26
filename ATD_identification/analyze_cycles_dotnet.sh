@@ -39,7 +39,8 @@ echo
 
 echo "== Step 1: extract type-ref file dependencies → $GRAPH_JSON =="
 # Optional but recommended: restore to reduce workspace load failures
-( cd "$REPO_PATH" && dotnet restore >/dev/null 2>&1 || true )
+# EnableWindowsTargeting=true lets Linux restore Windows-specific packages.
+( cd "$REPO_PATH" && dotnet restore -p:EnableWindowsTargeting=true >/dev/null 2>&1 || true )
 
 dotnet run --project "$DOTNET_DEPS_PROJ" -- \
   --repo-root "$REPO_PATH" \

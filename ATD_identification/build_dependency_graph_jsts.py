@@ -65,6 +65,13 @@ _EXCLUDED_PREFIXES = (
     ".git/",
 )
 
+# Common test-directory names (case-insensitive)
+_TEST_DIR_NAMES = frozenset({
+    "test", "tests", "__tests__", "__test__",
+    "spec", "specs", "__mocks__", "fixtures",
+    "testutils", "testing",
+})
+
 # dependency-cruiser dependency types that indicate type-only imports
 _TYPE_ONLY_DEP_TYPES = {"type-only"}
 
@@ -74,6 +81,52 @@ def _is_excluded(source: str) -> bool:
     normalized = source.replace("\\", "/")
     for prefix in _EXCLUDED_PREFIXES:
         if normalized.startswith(prefix) or f"/{prefix}" in normalized:
+            return True
+    return False
+
+
+# Filename stems that indicate a test file (matched after stripping extensions)
+_TEST_FILE_INFIXES = (".test.", ".spec.", ".tests.", ".specs.")
+
+
+def _is_test_file(filename: str) -> bool:
+    """Return True if *filename* (basename only) looks like a colocated test file.
+
+    Matches patterns common in JS/TS projects:
+        foo.test.ts, foo.spec.tsx, foo.test.js, Bar.spec.jsx, etc.
+    Also matches Python-style: test_foo.py, foo_test.py
+    """
+    fl = filename.lower()
+    for infix in _TEST_FILE_INFIXES:
+        if infix in fl:
+            return True
+    # Strip all extensions to get the stem  (e.g. "foo.svelte.ts" → "foo")
+    stem = fl
+    while "." in stem:
+        stem = stem.rsplit(".", 1)[0]
+    if stem.startswith("test_") or stem.endswith("_test") or stem.endswith("_tests"):
+        return True
+    return False
+
+
+def _is_in_test_dir(source: str) -> bool:
+    """Return True if the source path is inside a test directory or is a test file.
+
+    Directory check: any path segment matches a common test-directory name
+    (or starts with 'test_' / ends with '_test'/'_tests').
+
+    File check: the filename itself contains '.test.', '.spec.', etc.
+    """
+    parts = source.replace("\\", "/").split("/")
+    # Check the filename (last segment) for colocated test file patterns
+    if parts and _is_test_file(parts[-1]):
+        return True
+    # Check every segment for test-directory names
+    for part in parts:
+        pl = part.lower()
+        if pl in _TEST_DIR_NAMES:
+            return True
+        if pl.startswith("test_") or pl.endswith("_test") or pl.endswith("_tests"):
             return True
     return False
 
@@ -411,6 +464,7 @@ def build_graph(
     entry: str,
     alias_map: Optional[List[Tuple[str, str]]] = None,
     diagnostics: Optional[_DiagnosticCollector] = None,
+    exclude_tests: bool = True,
 ) -> Dict[str, Any]:
     """Convert dependency-cruiser output to canonical dependency_graph.json."""
     modules = depcruise.get("modules") or []
@@ -423,6 +477,9 @@ def build_graph(
     for mod in modules:
         source = mod.get("source") or ""
         if not source or _is_excluded(source):
+            continue
+
+        if exclude_tests and _is_in_test_dir(source):
             continue
 
         abs_source = os.path.join(repo_root, source)
@@ -476,6 +533,10 @@ def build_graph(
             if _is_excluded(resolved):
                 continue
 
+            # Skip test directory targets
+            if exclude_tests and _is_in_test_dir(resolved):
+                continue
+
             # Skip self-edges
             if resolved == source:
                 continue
@@ -526,6 +587,18 @@ def main() -> None:
     ap.add_argument("--diagnostics", default=None,
                     help="Path to write a diagnostic report of unresolved imports. "
                          "Use this to verify that no local project files were missed.")
+    ap.add_argument(
+        "--exclude-tests",
+        action="store_true",
+        default=True,
+        help="Exclude files inside common test directories (default: enabled).",
+    )
+    ap.add_argument(
+        "--no-exclude-tests",
+        dest="exclude_tests",
+        action="store_false",
+        help="Disable automatic test-directory exclusion.",
+    )
     args = ap.parse_args()
 
     repo_root = os.path.realpath(args.repo_root)
@@ -548,6 +621,7 @@ def main() -> None:
     payload = build_graph(
         depcruise, repo_root, args.entry,
         alias_map=alias_map, diagnostics=diag,
+        exclude_tests=args.exclude_tests,
     )
 
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

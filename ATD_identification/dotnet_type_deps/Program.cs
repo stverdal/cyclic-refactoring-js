@@ -29,6 +29,51 @@ internal static class Program
         return false;
     }
 
+    /// <summary>
+    /// Common test-directory names (case-insensitive).
+    /// </summary>
+    private static readonly HashSet<string> TestDirNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "test", "tests", "__tests__", "__test__",
+        "spec", "specs", "__mocks__", "fixtures",
+        "testutils", "testing",
+    };
+
+    /// <summary>
+    /// Filename infixes that indicate a colocated test file.
+    /// </summary>
+    private static readonly string[] TestFileInfixes = { ".test.", ".spec.", ".tests.", ".specs." };
+
+    private static bool IsTestFilename(string filename)
+    {
+        var fl = filename.ToLowerInvariant();
+        foreach (var infix in TestFileInfixes)
+            if (fl.Contains(infix)) return true;
+        // Check stem (strip all extensions)
+        var stem = fl;
+        while (stem.Contains('.'))
+            stem = stem[..stem.LastIndexOf('.')];
+        if (stem.StartsWith("test_") || stem.EndsWith("_test") || stem.EndsWith("_tests")) return true;
+        return false;
+    }
+
+    private static bool IsInTestDir(string absPath, string repoRoot)
+    {
+        var rel = Path.GetRelativePath(repoRoot, absPath).Replace('\\', '/');
+        var parts = rel.Split('/');
+        // Check the filename (last segment) for colocated test file patterns
+        if (parts.Length > 0 && IsTestFilename(parts[^1])) return true;
+        foreach (var part in parts)
+        {
+            if (TestDirNames.Contains(part)) return true;
+            var pl = part.ToLowerInvariant();
+            if (pl.StartsWith("test_") || pl.EndsWith("_test") || pl.EndsWith("_tests")) return true;
+            // Also match common .NET test project suffixes
+            if (pl.EndsWith(".tests") || pl.EndsWith(".test") || pl.EndsWith(".unittests") || pl.EndsWith(".integrationtests")) return true;
+        }
+        return false;
+    }
+
     private static IEnumerable<TypeSyntax> CollectTypeSyntaxNodes(SyntaxNode root) =>
         root.DescendantNodes().OfType<TypeSyntax>();
 
@@ -115,9 +160,12 @@ internal static class Program
         var slnArg = GetArg(args, "--sln");
         var csprojArg = GetArg(args, "--csproj");
 
+        // --exclude-tests (default: on) / --no-exclude-tests
+        var excludeTests = !args.Contains("--no-exclude-tests");
+
         if (repoRootArg is null || entryArg is null || outPathArg is null)
         {
-            return ExitWith("Usage: --repo-root <path> --entry <subdir> --out <file> [--sln <file>|--csproj <file>]", 2);
+            return ExitWith("Usage: --repo-root <path> --entry <subdir> --out <file> [--sln <file>|--csproj <file>] [--no-exclude-tests]", 2);
         }
 
         var repoRoot = Norm(repoRootArg);
@@ -152,6 +200,7 @@ internal static class Program
             if (!IsUnder(absPath, repoRoot)) return false;
             if (!IsUnder(absPath, entryAbs)) return false;
             if (ShouldIgnoreFile(absPath)) return false;
+            if (excludeTests && IsInTestDir(absPath, repoRoot)) return false;
             return true;
         }
 
@@ -161,7 +210,11 @@ internal static class Program
             return rel.Replace('\\', '/');
         }
 
-        var workspace = MSBuildWorkspace.Create();
+        var workspace = MSBuildWorkspace.Create(new Dictionary<string, string>
+        {
+            // Allow analysis of projects targeting net*-windows on Linux
+            ["EnableWindowsTargeting"] = "true",
+        });
         workspace.WorkspaceFailed += (_, __) => { /* noisy but usually fine */ };
 
         Solution solution;
