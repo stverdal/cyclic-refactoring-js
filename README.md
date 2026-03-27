@@ -137,7 +137,7 @@ See `docs/future_jsts_enhancements.md` for planned improvements including `sourc
 The Docker image is built using the provided `Dockerfile`:
 
 ```bash
-docker build --target dev -t atd-dev .
+docker build --target dev-v2 -t atd-dev-v2 .
 ```
 
 All experiments are executed inside this container.
@@ -152,11 +152,11 @@ docker run --rm -it \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$(pwd)":/workspace \
   -w /workspace \
-  --name atd-dev \
+  --name atd-dev-v2 \
   --user "$(id -u):$(id -g)" \
   --group-add "$DOCKER_GID" \
   -e HOST_PWD="$(pwd)" \
-  atd-dev
+  atd-dev-v2
 ```
 
 This configuration allows OpenHands to launch nested containers and ensures correct file ownership.
@@ -255,6 +255,8 @@ python3 scripts/extract_summary.py \
 python3 scripts/extract_summary.py --outdir analysis_out --results-roots results --exp-ids expD-explain_E0_S0_noaux --repos-file reposAC.txt --cycles-file cycles_to_analyzeAC.txt --repo AKVAconnect --top-diffs 3 --width 120 > analysis_out/summary_AKVAconnect.txt 2>&1
 
 python3 scripts/extract_summary.py --outdir analysis_out --results-roots results --exp-ids expE-explain_E0_S0_noaux --repos-file reposF.txt --cycles-file cycles_to_analyzeFish.txt --repo Fishtalk --top-diffs 3 --width 120 > analysis_out/summary_Fishtalk.txt 2>&1
+
+python3 scripts/extract_summary.py --outdir analysis_out --results-roots results --exp-ids expC-explain_E0_S0_noaux --repos-file repos.txt --cycles-file cycles_to_analyze.txt --repo Akvapi --top-diffs 3 --width 120 > analysis_out/summary_Akvapi.txt 2>&1
 
 ---
 

@@ -1,5 +1,5 @@
 # ---------- base: tools + deps (dev-only) ----------
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS dev
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS dev-v2
 
 # add docker CLI so OpenHands can talk to /var/run/docker.sock
 RUN apt-get update && apt-get install -y --no-install-recommends \
