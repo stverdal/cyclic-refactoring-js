@@ -21,8 +21,8 @@ LLM_MODEL="${LLM_MODEL:-}"
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 LLM_API_KEY="${LLM_API_KEY:-}"
 
-OPENHANDS_IMAGE="${OPENHANDS_IMAGE:-docker.all-hands.dev/all-hands-ai/openhands:0.59}"
-RUNTIME_IMAGE="${RUNTIME_IMAGE:-docker.all-hands.dev/all-hands-ai/runtime:0.59-nikolaik}"
+OPENHANDS_IMAGE="${OPENHANDS_IMAGE:-docker.openhands.dev/openhands/openhands:1.4}"
+RUNTIME_IMAGE="${RUNTIME_IMAGE:-docker.openhands.dev/openhands/runtime:1.4-nikolaik}"
 MAX_ITERS="${MAX_ITERS:-100}"
 COMMIT_MESSAGE="${COMMIT_MESSAGE:-Refactor: break dependency cycle}"
 
