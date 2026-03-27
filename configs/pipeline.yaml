@@ -4,6 +4,8 @@ cycles_file: cycles_to_analyze.txt
 results_root: results
 experiment_id: expF
 
+policy:
+  delete_refactor_branches_after_metrics: false
 
 llm:
   base_url: "http://172.17.0.1:11434/v1"
