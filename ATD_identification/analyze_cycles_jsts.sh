@@ -308,6 +308,41 @@ if [[ -f "$REPO_PATH/vue.config.js" || -f "$REPO_PATH/nuxt.config.ts" || \
   _install_parser_sandboxed vue
 fi
 
+# tsconfig.json "extends" can reference npm packages (e.g. @vue/tsconfig,
+# @tsconfig/node18).  Without these installed, dependency-cruiser cannot
+# follow the extends chain and fails with "<pkg> not found".
+if [[ -f "$REPO_PATH/tsconfig.json" ]]; then
+  while IFS= read -r _extends_pkg; do
+    [[ -n "$_extends_pkg" ]] && _install_parser_sandboxed "$_extends_pkg"
+  done < <(python3 -c "
+import json, sys, os
+def extract_extends_pkgs(tsconfig_path, seen=None):
+    seen = seen or set()
+    if tsconfig_path in seen:
+        return
+    seen.add(tsconfig_path)
+    try:
+        data = json.loads(open(tsconfig_path).read())
+    except Exception:
+        return
+    ext = data.get('extends', '')
+    if isinstance(ext, str):
+        ext = [ext]
+    for e in (ext if isinstance(ext, list) else []):
+        e = e.strip()
+        if not e or e.startswith('.') or e.startswith('/'):
+            continue
+        # Extract the npm package name (handle scoped packages)
+        parts = e.split('/')
+        if parts[0].startswith('@') and len(parts) >= 2:
+            pkg = parts[0] + '/' + parts[1]
+        else:
+            pkg = parts[0]
+        print(pkg)
+extract_extends_pkgs('$REPO_PATH/tsconfig.json')
+" 2>/dev/null)
+fi
+
 # ---- Step 1b: SvelteKit sync (generate .svelte-kit/tsconfig.json) ----
 TSCONFIG_PATH=""
 if [[ -f "$REPO_PATH/svelte.config.js" || -f "$REPO_PATH/svelte.config.ts" ]]; then
