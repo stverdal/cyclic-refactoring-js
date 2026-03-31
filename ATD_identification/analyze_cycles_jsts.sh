@@ -286,7 +286,7 @@ _install_parser_sandboxed() {
   ) >> "${NPM_LOG:-/dev/null}" 2>&1
 
   if [[ -d "$_sandbox/node_modules/$pkg" ]]; then
-    mkdir -p "$REPO_PATH/node_modules"
+    mkdir -p "$(dirname "$dest")"
     cp -r "$_sandbox/node_modules/$pkg" "$dest"
     echo "  ✔ $pkg installed"
   else
