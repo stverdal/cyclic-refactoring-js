@@ -308,38 +308,72 @@ if [[ -f "$REPO_PATH/vue.config.js" || -f "$REPO_PATH/nuxt.config.ts" || \
   _install_parser_sandboxed vue
 fi
 
-# tsconfig.json "extends" can reference npm packages (e.g. @vue/tsconfig,
+# tsconfig files can reference npm packages via "extends" (e.g. @vue/tsconfig,
 # @tsconfig/node18).  Without these installed, dependency-cruiser cannot
 # follow the extends chain and fails with "<pkg> not found".
-if [[ -f "$REPO_PATH/tsconfig.json" ]]; then
+#
+# Vue 3 projects use a "references" pattern: the root tsconfig.json has no
+# "extends" itself but references tsconfig.app.json / tsconfig.node.json which
+# DO extend @vue/tsconfig/*.  We must follow references AND scan all
+# tsconfig*.json files to catch these.
+if ls "$REPO_PATH"/tsconfig*.json >/dev/null 2>&1; then
   while IFS= read -r _extends_pkg; do
     [[ -n "$_extends_pkg" ]] && _install_parser_sandboxed "$_extends_pkg"
   done < <(python3 -c "
-import json, sys, os
-def extract_extends_pkgs(tsconfig_path, seen=None):
-    seen = seen or set()
-    if tsconfig_path in seen:
+import json, glob, os, sys
+
+repo = '$REPO_PATH'
+seen_files = set()
+seen_pkgs = set()
+
+def extract_extends_pkgs(tsconfig_path):
+    tsconfig_path = os.path.realpath(tsconfig_path)
+    if tsconfig_path in seen_files:
         return
-    seen.add(tsconfig_path)
+    seen_files.add(tsconfig_path)
     try:
         data = json.loads(open(tsconfig_path).read())
     except Exception:
         return
+    # Process 'extends'
     ext = data.get('extends', '')
     if isinstance(ext, str):
         ext = [ext]
     for e in (ext if isinstance(ext, list) else []):
         e = e.strip()
-        if not e or e.startswith('.') or e.startswith('/'):
+        if not e:
             continue
-        # Extract the npm package name (handle scoped packages)
+        if e.startswith('.') or e.startswith('/'):
+            # Relative extends — follow it (may itself extend an npm pkg)
+            ref_path = os.path.join(os.path.dirname(tsconfig_path), e)
+            if os.path.isdir(ref_path):
+                ref_path = os.path.join(ref_path, 'tsconfig.json')
+            elif not os.path.isfile(ref_path) and not ref_path.endswith('.json'):
+                ref_path += '.json'
+            extract_extends_pkgs(ref_path)
+            continue
+        # npm package — extract package name
         parts = e.split('/')
         if parts[0].startswith('@') and len(parts) >= 2:
             pkg = parts[0] + '/' + parts[1]
         else:
             pkg = parts[0]
-        print(pkg)
-extract_extends_pkgs('$REPO_PATH/tsconfig.json')
+        if pkg not in seen_pkgs:
+            seen_pkgs.add(pkg)
+            print(pkg)
+    # Process 'references' (Vue 3 pattern: [{\"path\": \"./tsconfig.app.json\"}, ...])
+    refs = data.get('references', [])
+    if isinstance(refs, list):
+        for ref in refs:
+            if isinstance(ref, dict) and 'path' in ref:
+                ref_path = os.path.join(os.path.dirname(tsconfig_path), ref['path'])
+                if os.path.isdir(ref_path):
+                    ref_path = os.path.join(ref_path, 'tsconfig.json')
+                extract_extends_pkgs(ref_path)
+
+# Start from all tsconfig*.json files in repo root
+for f in sorted(glob.glob(os.path.join(repo, 'tsconfig*.json'))):
+    extract_extends_pkgs(f)
 " 2>/dev/null)
 fi
 
